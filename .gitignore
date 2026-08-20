@@ -1,0 +1,60 @@
+# ---------------------------------------------------------------------------
+# THIS IS A PUBLIC REPOSITORY.
+# Everything committed here is world-readable within seconds and is mirrored
+# by bots. A force-push does NOT un-publish it. The entries in the "secrets"
+# block below are the ones that would be unrecoverable.
+# ---------------------------------------------------------------------------
+
+# --- secrets: never commit, no exceptions ---
+/config/master.key
+/config/credentials/*.key
+.env
+.env.*
+!.env.example
+*.pem
+*.p12
+*.key
+!/config/credentials/.keep
+
+# --- Rails runtime state ---
+/.bundle
+/vendor/bundle
+/log/*
+!/log/.keep
+/tmp/*
+!/tmp/.keep
+!/tmp/pids
+/tmp/pids/*
+!/tmp/pids/.keep
+/tmp/storage/*
+!/tmp/storage/.keep
+/storage/*
+!/storage/.keep
+/public/assets
+/app/assets/builds/*
+!/app/assets/builds/.keep
+/db/*.sqlite3
+/db/*.sqlite3-*
+
+# --- local dev ---
+/node_modules
+/coverage
+.byebug_history
+
+# --- backups / dumps: a pg_dump in the repo is a data breach ---
+*.dump
+*.sql.gz
+*.age
+/backups/
+
+# --- editors / OS ---
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# --- claude code: machine-specific, never committed ---
+.claude/settings.json
+.claude/settings.local.json
+.claude/worktrees/
+.claude/scheduled_tasks.lock
