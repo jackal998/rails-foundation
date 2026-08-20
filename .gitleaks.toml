@@ -1,0 +1,63 @@
+# Repo-level EXTENSION of gitleaks' default ruleset — picked up automatically
+# by the global pre-commit hook (gitleaks reads a repo-root .gitleaks.toml when
+# no --config is passed). `useDefault = true` keeps every stock vendor-token
+# rule active; the rules below ADD classes the defaults do not cover.
+#
+# WHY THE RAILS RULES EXIST: GitHub's free secret scanning has NO partner
+# pattern for a Rails master key, and custom patterns are a paid Secret
+# Protection feature. On a PUBLIC repo this local hook is the only thing
+# standing between `git add -A` and an unrecoverable disclosure.
+#
+# False positives: suppress per-finding via .gitleaksignore using the reported
+# fingerprint. Never weaken or delete a rule.
+
+[extend]
+useDefault = true
+
+# --- Rails secrets -----------------------------------------------------------
+
+# Path-scoped, so it has no false-positive surface: if a key FILE is ever
+# staged (someone ran `git add -f`, or edited .gitignore), this fires on its
+# contents regardless of what they look like.
+[[rules]]
+id = "rails-key-file-staged"
+description = "Rails master.key / credentials key file staged for commit"
+path = '''(^|/)(config/)?(master\.key|credentials/[^/]+\.key)$'''
+regex = '''[A-Za-z0-9]{16,}'''
+
+# Content-scoped: catches the key pasted into a Dockerfile, a workflow, a
+# README, or a shell script — the common real-world leak, since the file
+# itself is usually correctly ignored.
+[[rules]]
+id = "rails-master-key-literal"
+description = "RAILS_MASTER_KEY assigned a literal 32-hex value"
+regex = '''(?i)rails[_-]?master[_-]?key\s*[:=]\s*['"]?[a-f0-9]{32}\b'''
+
+[[rules]]
+id = "rails-secret-key-base-literal"
+description = "SECRET_KEY_BASE assigned a literal value"
+regex = '''(?i)secret[_-]?key[_-]?base\s*[:=]\s*['"]?[a-f0-9]{64,}\b'''
+
+# --- PII (ported from the mini-projects nursery) ------------------------------
+# Placeholder convention these enforce: usernames in documented paths are
+# always angle-bracketed — `C:/Users/<you>`, `/home/<you>` — never a real
+# account name. Treat everything in a public repo as permanently published.
+
+[[rules]]
+id = "home-path-real-username"
+description = "Absolute home path with a concrete username (PII — use <you> placeholders)"
+# The username char class excludes <, $, %, so placeholder forms
+# (C:\Users\<you>, /home/$USER, %USERPROFILE%) never match.
+regex = '''(?:[A-Za-z]:[\\/]+Users|/Users|/home)[\\/]+[A-Za-z0-9._-]{1,32}\b'''
+
+[[rules]]
+id = "tw-national-id"
+description = "Taiwan national ID shape (letter + 1/2 + 8 digits)"
+regex = '''\b[A-Z][12][0-9]{8}\b'''
+
+# --- Connection strings ------------------------------------------------------
+
+[[rules]]
+id = "postgres-url-with-password"
+description = "Postgres connection URL carrying an inline password"
+regex = '''postgres(?:ql)?://[^:\s/]+:[^@\s]+@[^\s"']+'''

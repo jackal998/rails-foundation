@@ -1,0 +1,23 @@
+# Normalise line endings so a Windows checkout cannot write CRLF into files
+# that Linux containers execute. Without this, `bin/rails` checked out on
+# Windows gets \r\n on its shebang line and the container fails with the
+# famously misleading `no such file or directory` — pointing at the
+# interpreter, not at the file you actually broke.
+* text=auto eol=lf
+
+# Belt and braces for everything executed inside a container or by a shell.
+bin/*           text eol=lf
+*.sh            text eol=lf
+Dockerfile      text eol=lf
+*.Dockerfile    text eol=lf
+docker-entrypoint text eol=lf
+
+# Binary — never touch these.
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.gif  binary
+*.ico  binary
+*.pdf  binary
+*.woff binary
+*.woff2 binary
