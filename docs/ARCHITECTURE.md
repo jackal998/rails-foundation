@@ -11,20 +11,37 @@ amd64-only development fleet, and users in Taiwan.
 
 ## The shape
 
-The provisional platform is **Northflank's free Sandbox tier**, in its
-Japan region, with its managed Postgres addon. Provisional is the
-operative word: that choice is contingent on the first two items under
-"Still unverified" below, and Northflank's own documentation states the
-free tier "should not be used for production applications" — which is
-why the first graduation trigger fires before the first real user, not
-when personal data arrives. Every layer below is written so that
-swapping the platform is a Dockerfile and a `pg_dump`.
+The provisional platform is **Northflank**, with its managed Postgres
+addon. Provisional is the operative word: Northflank's own documentation
+states the free tier "should not be used for production applications" —
+which is why the first graduation trigger fires before the first real
+user, not when personal data arrives. Every layer below is written so
+that swapping the platform is a Dockerfile and a `pg_dump`.
+
+> **Correction, 2026-08-23 — this said "free Sandbox tier, in its Japan
+> region". That combination does not exist.** Read in the live product:
+> the free tier can deploy to exactly two regions, `us-central`
+> (Council Bluffs, Iowa) and `europe-west` (London). All fifteen others,
+> `asia-northeast` (Tokyo) included, are marked *Upgrade to pay as you
+> go to use this region*. Evidence and the full region table:
+> [`pre-build-research/2026-08-23-northflank-free-tier.md`](pre-build-research/2026-08-23-northflank-free-tier.md).
+>
+> So the tier and the region are now a choice, not a given: **free but
+> far** (Iowa/London), or **near but paid** (Tokyo, from $5.40/month for
+> the app container alone, before the database). That choice is the
+> owner's and has not been made. It is deliberately *not* being made now
+> — see "What this correction disturbs" below.
+
+The `$/mo` column below was written assuming the free tier. Since the
+free tier turns out to be Iowa/London-only, the three rows marked † are
+`0` **only if the latency of those two regions is acceptable**; in Tokyo
+they are metered.
 
 | Layer | Choice | $/mo | Cost to leave |
 |---|---|---|---|
-| Region | one region for app **and** database, never split | 0 | **high** — irreversible |
-| Compute | one managed container, `SOLID_QUEUE_IN_PUMA=true` | 0 | low — a Dockerfile |
-| Database | managed Postgres addon, same region | 0 | low — `pg_dump`, ~1h under 10 GB |
+| Region | one region for app **and** database, never split | 0 † | **high** — irreversible |
+| Compute | one managed container, `SOLID_QUEUE_IN_PUMA=true` | 0 † | low — a Dockerfile |
+| Database | managed Postgres addon, same region | 0 † | low — `pg_dump`, ~1h under 10 GB |
 | Jobs / cache / cable | Solid Queue + Solid Cache + Solid Cable on the primary Postgres; cache capped ~256 MB | 0 | near-zero toward Sidekiq |
 | Auth | `bin/rails generate authentication`; `rodauth-rails` before MFA/passkeys | 0 | **zero** — our own schema |
 | Edge | Cloudflare Free: DNS, CDN, managed WAF, Turnstile | 0 | hours — a DNS change |
@@ -35,8 +52,18 @@ swapping the platform is a Dockerfile and a `pg_dump`.
 | Errors / analytics | one product-analytics free tier, not an error-only one | 0 | low |
 | Domain + mailbox | registrar at cost + a paid mailbox | ~2.45 | low |
 
-**Recurring: about US$2.45/month, all of it the domain and the mailbox.**
-Infrastructure is $0 and roughly $7.50 of the ceiling is unspent.
+**Recurring: about US$2.45/month, all of it the domain and the mailbox** —
+*if* the free tier is used, which now means Iowa or London. Infrastructure
+is then $0 and roughly $7.50 of the ceiling is unspent.
+
+In Tokyo the same shape is metered. Observed unit prices, 2026-08-23:
+CPU $0.01667/vCPU/hr, memory $0.00833/GB/hr, egress $0.06/GB, disk
+$0.15/GB/month. The smallest plan a Rails 8.1 container actually fits in
+is `nf-compute-20` — 0.2 shared vCPU, 512 MB, **$5.40/month** — and that
+is the app alone, before the Postgres addon. With the domain and mailbox
+at $2.45, the US$10 ceiling has roughly $2.15 left to cover a database.
+That is arithmetic over observed prices, not a quote: the addon's price
+has not been looked up.
 
 ## Why there is no Redis
 
@@ -70,7 +97,9 @@ no second service to pay for or patch.
 - **Railway** — the only hard spend-capped platform that fits the budget,
   but its only Asian region is ~60 ms further away than Tokyo. The
   safest-by-billing host and the safest-by-latency host are different
-  vendors, and latency is paid on every request.
+  vendors, and latency is paid on every request. *(2026-08-23: this
+  rejection is the one most disturbed by the region correction — see
+  below.)*
 - **Oracle Always Free** — genuinely $0 and mechanically uncharg­eable
   while the tenancy is never upgraded, but the free tier is **arm64**,
   which manufactures a cross-architecture gap against an all-amd64 dev
@@ -100,6 +129,51 @@ no second service to pay for or patch.
   paid plan on day one; and leaving is the single most expensive
   reversal in the stack.
 
+## What this correction disturbs — and why it is not being re-decided now
+
+Northflank won this comparison on a specific conjunction: **a Japan
+region, always-on, a free Postgres that is neither deleted nor paused,
+amd64, at $0.** Render and Heroku were rejected partly for having no
+Asian region; Railway was rejected for being ~60 ms further than Tokyo.
+Latency was doing real work in that argument.
+
+The correction splits that conjunction in two, and each half weakens a
+different part of the case:
+
+- **Free tier → Iowa or London.** Northflank then fails the very
+  criterion it beat Render, Heroku and Railway on. A free container in
+  Council Bluffs is not 60 ms further than Tokyo; it is a different
+  order of distance. Whatever else is true, "free *and* near" is off
+  the table.
+- **Tokyo → pay-as-you-go, and a card on file.** That is the branch
+  where Railway's hard spend cap stops being a nicety. With security
+  ranked first, "the free tier is the mechanical guarantee the card
+  cannot be charged" was load-bearing, and this branch removes it.
+  Northflank shows a *$50 billing limit*, but the observed wording is
+  "$50.00 until your next invoice, or at the end of the month —
+  whichever comes first", which reads as an **invoicing threshold, not a
+  spend cap**. **Unverified — do not treat Northflank as spend-capped
+  until someone confirms it in writing.**
+
+So the honest status is: the platform decision is **reopened, not
+reversed**. Northflank may still win; the argument that put it first
+just lost a leg.
+
+It is deliberately not being re-run right now, for one reason: **the
+first bake-off was decided from documentation, and documentation is
+exactly what was wrong here.** Re-running it on paper would repeat the
+mistake at higher confidence. This document already prescribes the
+remedy in the two sections below — a real soak test and a timed exit
+drill — and both need an application that does not yet exist.
+
+The dependency therefore runs the opposite way to how it was assumed:
+**the foundation is not blocked by the platform; the platform decision
+is blocked by the foundation.** Nothing in the layer table is
+platform-specific — a Dockerfile, plain Postgres, Solid Queue on that
+Postgres, our own `users` table, Cloudflare, GitHub Actions, ghcr.io,
+`pg_dump` to object storage. Build that, measure it, then choose with
+numbers instead of vendor pages.
+
 ## Practice, deliberately
 
 This project exists partly to learn on, so operator experience is not
@@ -116,21 +190,35 @@ without any.
 
 ## Still unverified — do not build on these
 
-- **The free tier's exact vCPU/RAM.** The vendor publishes every paid
-  plan's specs and leaves the free row blank; several documentation URLs
-  404. Read it in the dashboard and, better, run a real soak test — cold
-  boot, migrations, peak RSS, queue lag — before committing. If the
-  container is 256 MB-class, Rails will not fit.
+- **The free tier's exact vCPU/RAM.** Still unpublished as of
+  2026-08-23: the pricing page has no free-tier column at all, and the
+  docs state only the object counts (2 services, 2 jobs, 1 addon, up to
+  1 BYOC cluster). **The only way to read it is to create the free
+  project and open a service's compute-plan selector — and creating the
+  project fixes that project's region.** A throwaway free project made
+  purely to read the number is a probe, not the irreversible regional
+  commitment; a project that gets deployed to is the commitment. Keep
+  the two apart deliberately. If the container is 256 MB-class, Rails
+  will not fit — see the measured RSS below.
 - **Whether a paid web service keeps a free database addon.** The
   cheapest upgrade path assumes it does. Nothing documents that. If it is
   false, the realistic bill is roughly double the assumed step.
-- **Which city each region identifier actually is.** The regions
-  documentation lists identifiers and continental groupings, no cities and
-  no cloud provider. Region is irreversible, so do not act on an
-  inference from a naming convention.
-- **Real RSS for this app.** The 300–500 MB working figure is an
-  engineering estimate. Measure it with `docker stats` against the
-  generated app.
+- ~~**Which city each region identifier actually is.**~~ **Settled
+  2026-08-23.** The *documentation* still omits cities, but the
+  create-project UI shows `identifier · City` on every row —
+  `asia-northeast · Tokyo`, `us-central · Council Bluffs`,
+  `asia-east · Hong Kong`. The irreversible choice can be made with the
+  physical location in view. The old guess that `asia-east` meant Taiwan
+  was wrong: it is Hong Kong.
+- **Real RSS for this app.** **Partly settled 2026-08-23**: a *default
+  generated* Rails 8.1 app, booted in production mode with
+  `SOLID_QUEUE_IN_PUMA=true` against a real Postgres, measured
+  **205.2 MiB RSS**. That is a floor, not a forecast — it is a blank app
+  with no gems, no assets and no traffic. It replaces the 300–500 MB
+  estimate as the *starting* number and already settles one thing: a
+  256 MB container is not viable, and 512 MB is the smallest plan worth
+  testing. Peak RSS under load, migrations and queue lag still need a
+  real soak test against the real app.
 - **Latency to the actual endpoint.** Measurements so far are ICMP to a
   different vendor's object storage in each region — a proxy, not an
   HTTP/TLS p95 against the real origin.
@@ -153,6 +241,16 @@ rather than during an incident.
 - **Before the first real external user** — the free tier is documented
   by its own vendor as not for production use. Move to a paid plan or a
   tested alternative *then*, not when personal data arrives.
+- **Before any card is attached to any platform** — re-run the
+  Northflank-vs-Railway comparison with the spend-cap question settled
+  in writing. Attaching a card removes the one mechanical guarantee that
+  the budget cannot be exceeded, so it is the moment the billing-safety
+  property has to be bought back some other way.
+- **The measured p95 from Taiwan to the chosen free region exceeds what
+  the app can live with** — then "free" has been paid for in latency,
+  and the choice is Tokyo-with-a-card or a different vendor. Measure
+  before assuming; the only latency numbers on record are ICMP to a
+  different vendor's endpoints.
 - Free container too small under a real soak test → step up one compute
   plan; do not retreat to SQLite.
 - More than ~3 app instances → add a connection pooler **before** scaling
