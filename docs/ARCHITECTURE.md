@@ -60,7 +60,9 @@ In Tokyo the same shape is metered. Observed unit prices, 2026-08-23:
 CPU $0.01667/vCPU/hr, memory $0.00833/GB/hr, egress $0.06/GB, disk
 $0.15/GB/month. The smallest plan a Rails 8.1 container actually fits in
 is `nf-compute-20` — 0.2 shared vCPU, 512 MB, **$5.40/month** — and that
-is the app alone, before the Postgres addon. With the domain and mailbox
+is the app alone, before the Postgres addon. See the measured RSS under
+"Still unverified" below: the foundation already uses 287.6 MiB of that
+512 MB with no features in it. With the domain and mailbox
 at $2.45, the US$10 ceiling has roughly $2.15 left to cover a database.
 That is arithmetic over observed prices, not a quote: the addon's price
 has not been looked up.
@@ -210,15 +212,31 @@ without any.
   `asia-east · Hong Kong`. The irreversible choice can be made with the
   physical location in view. The old guess that `asia-east` meant Taiwan
   was wrong: it is Hong Kong.
-- **Real RSS for this app.** **Partly settled 2026-08-23**: a *default
-  generated* Rails 8.1 app, booted in production mode with
-  `SOLID_QUEUE_IN_PUMA=true` against a real Postgres, measured
-  **205.2 MiB RSS**. That is a floor, not a forecast — it is a blank app
-  with no gems, no assets and no traffic. It replaces the 300–500 MB
-  estimate as the *starting* number and already settles one thing: a
-  256 MB container is not viable, and 512 MB is the smallest plan worth
-  testing. Peak RSS under load, migrations and queue lag still need a
-  real soak test against the real app.
+- **Real RSS for this app.** **Settled 2026-08-23**, measured against
+  the actual production image of this repository — built from the
+  committed Dockerfile, booted with `SOLID_QUEUE_IN_PUMA=true` against a
+  real Postgres, migrations applied by the entrypoint:
+
+  | Configuration | Container memory |
+  |---|---|
+  | web only, Solid Queue off | 109.7 MiB |
+  | web + Solid Queue in Puma, idle after boot | 237.2 MiB |
+  | same, after 200 requests, settled | **287.6 MiB** |
+
+  Solid Queue inside Puma therefore costs about **127 MiB** — more than
+  half the footprint, and the true price of having no Redis and no second
+  container. Verified rather than inferred from the flag: with it on,
+  four processes register in `solid_queue_processes` (Dispatcher,
+  Scheduler, Supervisor(fork), Worker); with it off, zero.
+
+  This supersedes both the 300–500 MB estimate and the earlier 205.2 MiB
+  figure, which was a blank generated app. 287.6 MiB is a foundation with
+  **no features yet**, so against `nf-compute-20` (512 MB) it sits at
+  roughly 56% at rest before a single line of product code. A 256 MB plan
+  is out. Whether 512 MB survives real code and real traffic is what a
+  soak test still has to answer — and if it does not, the next rung is
+  `nf-compute-50` at $12/month, which exceeds the entire budget on
+  compute alone.
 - **Latency to the actual endpoint.** Measurements so far are ICMP to a
   different vendor's object storage in each region — a proxy, not an
   HTTP/TLS p95 against the real origin.
