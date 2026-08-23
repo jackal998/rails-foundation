@@ -1,0 +1,58 @@
+# Local development and test.
+#
+# The app service builds the `dev` stage of the SAME Dockerfile that produces
+# the production image, so the two cannot drift onto different base images or
+# Ruby versions. Production builds the file's last stage; nothing here changes
+# that.
+#
+# Requires a .env file (gitignored). Copy .env.example and edit it.
+
+name: rails-foundation
+
+services:
+  db:
+    # Pinned deliberately. Northflank's managed Postgres offers 12-18, so 17 is
+    # inside what the platform can serve. This pin MUST match whatever the
+    # managed addon is actually provisioned with: pg_dump restores into an
+    # equal or NEWER major version, never an older one, so a local database
+    # ahead of production is a restore that fails only when it is needed.
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: app
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env - copy .env.example}
+      POSTGRES_DB: app_development
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      # 5433 on the host so this cannot collide with a Postgres already
+      # installed on the machine and silently connect you to the wrong one.
+      - "127.0.0.1:5433:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U app -d app_development"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  app:
+    build:
+      context: .
+      target: dev
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DB_HOST: db
+      DB_USERNAME: app
+      DB_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env - copy .env.example}
+    volumes:
+      - .:/rails
+      # Gems live outside /rails, so the bind mount above cannot shadow them.
+      # A named volume is seeded from the image on first use, which is what
+      # makes `bundle install` survive between runs.
+      - bundle:/usr/local/bundle
+    ports:
+      - "127.0.0.1:3000:3000"
+
+volumes:
+  pgdata:
+  bundle:

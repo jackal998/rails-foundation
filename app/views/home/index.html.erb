@@ -1,0 +1,14 @@
+<h1>rails-foundation</h1>
+
+<p>
+  The foundation is up. This page is public; it exists so the sign-in flow has
+  somewhere to land, and so a deploy can be checked by a human as well as by
+  <code>/up</code>.
+</p>
+
+<% if authenticated? %>
+  <p>You are signed in.</p>
+  <%= button_to "Sign out", session_path, method: :delete %>
+<% else %>
+  <p><%= link_to "Sign in", new_session_path %></p>
+<% end %>
