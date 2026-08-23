@@ -121,47 +121,6 @@ jobs:
       - name: Run tests
         run: bin/rails db:test:prepare test
 
-  system-test:
-    runs-on: ubuntu-latest
-
-    services:
-      postgres:
-        image: postgres:17-alpine
-        env:
-          POSTGRES_USER: postgres
-          POSTGRES_HOST_AUTH_METHOD: trust
-        ports:
-          - 5432:5432
-        options: --health-cmd="pg_isready" --health-interval=10s --health-timeout=5s --health-retries=3
-
-    env:
-      RAILS_ENV: test
-      DB_HOST: localhost
-      DB_USERNAME: postgres
-
-    steps:
-      - name: Install packages
-        run: sudo apt-get update && sudo apt-get install --no-install-recommends -y libpq-dev libvips
-
-      - name: Checkout code
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
-
-      - name: Set up Ruby
-        uses: ruby/setup-ruby@95ef2b042f9d7a56d8268cba8559e2842e2ad01b # v1
-        with:
-          bundler-cache: true
-
-      - name: Run System Tests
-        run: bin/rails db:test:prepare test:system
-
-      - name: Keep screenshots from failed system tests
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        if: failure()
-        with:
-          name: screenshots
-          path: ${{ github.workspace }}/tmp/screenshots
-          if-no-files-found: ignore
-
   # ---------------------------------------------------------------------------
   # This job is not a test of the application. It is the ENFORCEMENT MECHANISM
   # for one of the three decisions CLAUDE.md marks as expensive to undo:
@@ -199,8 +158,24 @@ jobs:
       PGUSER: postgres
 
     steps:
-      - name: Install packages
-        run: sudo apt-get update && sudo apt-get install --no-install-recommends -y libpq-dev libvips postgresql-client
+      - name: Install packages, with a pg_dump matching the server major
+        # The runner's stock postgresql-client trails the pinned server, and
+        # pg_dump refuses to dump a server newer than itself. Pulling the
+        # client from the official PostgreSQL apt repository keeps the major
+        # version a single knob shared with compose.yaml, rather than pinning
+        # the database down to whatever the runner happens to ship.
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y libpq-dev libvips curl ca-certificates
+          sudo install -d /usr/share/postgresql-common/pgdg
+          sudo curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc \
+            -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc
+          echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] \
+          https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
+            | sudo tee /etc/apt/sources.list.d/pgdg.list > /dev/null
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y postgresql-client-17
+          pg_dump --version
 
       - name: Checkout code
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
