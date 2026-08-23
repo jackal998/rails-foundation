@@ -35,7 +35,14 @@ gem "bootsnap", require: false
 gem "thruster", require: false
 
 # Use Active Storage variants [https://guides.rubyonrails.org/active_storage_overview.html#transforming-images]
-gem "image_processing", "~> 1.2"
+gem "image_processing", "~> 2.0"
+# image_processing 2.0 dropped ruby-vips as an automatic dependency and now
+# requires it to be declared here. libvips itself is already installed in the
+# Dockerfile's base stage, so this is the binding, not the library.
+# require: false because Bundler.require would otherwise dlopen libvips in
+# EVERY Rails process at boot - including audits and one-off tasks that
+# never touch an image. image_processing loads it on demand.
+gem "ruby-vips", "~> 2.0", require: false
 
 group :development, :test do
   # See https://guides.rubyonrails.org/debugging_rails_applications.html#debugging-with-the-debug-gem
