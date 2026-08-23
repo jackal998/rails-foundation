@@ -24,7 +24,7 @@ RUN apt-get update -qq && \
 ENV RAILS_ENV="production" \
     BUNDLE_DEPLOYMENT="1" \
     BUNDLE_PATH="/usr/local/bundle" \
-    BUNDLE_WITHOUT="development" \
+    BUNDLE_WITHOUT="development:test" \
     LD_PRELOAD="/usr/local/lib/libjemalloc.so"
 
 # Throw-away build stage to reduce size of final image
@@ -73,7 +73,7 @@ RUN apt-get update -qq && \
     rm -rf /var/lib/apt/lists /var/cache/apt/archives
 
 # Undo the three production-only bundle settings inherited from `base`.
-# BUNDLE_WITHOUT="development" would drop exactly the gems this stage needs,
+# BUNDLE_WITHOUT="development:test" would drop exactly the gems this stage needs,
 # and BUNDLE_DEPLOYMENT="1" makes bundler refuse any Gemfile change that is
 # not already frozen into Gemfile.lock — correct for a release, wrong here.
 ENV RAILS_ENV="development" \
