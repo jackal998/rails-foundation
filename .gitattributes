@@ -21,3 +21,14 @@ docker-entrypoint text eol=lf
 *.pdf  binary
 *.woff binary
 *.woff2 binary
+
+# --- from the Rails 8.1 generator, folded in 2026-08-23 ---
+# Keeps generated files out of GitHub's language statistics.
+db/schema.rb    linguist-generated
+vendor/**       linguist-vendored
+
+# Makes `git diff` on encrypted credentials show the DECRYPTED diff instead of
+# unreadable ciphertext. Requires the local driver, which Rails installs:
+#   git config diff.rails_credentials.textconv "bin/rails credentials:diff"
+config/credentials.yml.enc      diff=rails_credentials
+config/credentials/*.yml.enc    diff=rails_credentials
