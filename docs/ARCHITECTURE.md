@@ -61,7 +61,7 @@ CPU $0.01667/vCPU/hr, memory $0.00833/GB/hr, egress $0.06/GB, disk
 $0.15/GB/month. The smallest plan a Rails 8.1 container actually fits in
 is `nf-compute-20` — 0.2 shared vCPU, 512 MB, **$5.40/month** — and that
 is the app alone, before the Postgres addon. See the measured RSS under
-"Still unverified" below: the foundation already uses 287.6 MiB of that
+"Still unverified" below: the foundation already uses 269.1 MiB of that
 512 MB with no features in it. With the domain and mailbox
 at $2.45, the US$10 ceiling has roughly $2.15 left to cover a database.
 That is arithmetic over observed prices, not a quote: the addon's price
@@ -220,8 +220,16 @@ without any.
   | Configuration | Container memory |
   |---|---|
   | web only, Solid Queue off | 109.7 MiB |
-  | web + Solid Queue in Puma, idle after boot | 237.2 MiB |
-  | same, after 200 requests, settled | **287.6 MiB** |
+  | web + Solid Queue in Puma, idle after boot | 232.8 MiB |
+  | same, after 200 requests, settled | **269.1 MiB** |
+
+  Those figures are after two deliberate trims. Before them the settled
+  number was 287.6 MiB: the image shipped the test group's gems, and
+  `ruby-vips` was loaded at boot by `Bundler.require`, which dlopens
+  libvips in every process. Excluding the test group and making the vips
+  binding load on demand took 18.5 MiB off the runtime and 76 MB off the
+  image (529 MB to 453 MB). Recorded because it shows how much of a small
+  plan is spent on things the app never asked for.
 
   Solid Queue inside Puma therefore costs about **127 MiB** — more than
   half the footprint, and the true price of having no Redis and no second
@@ -232,7 +240,7 @@ without any.
   This supersedes both the 300–500 MB estimate and the earlier 205.2 MiB
   figure, which was a blank generated app. 287.6 MiB is a foundation with
   **no features yet**, so against `nf-compute-20` (512 MB) it sits at
-  roughly 56% at rest before a single line of product code. A 256 MB plan
+  roughly 53% at rest before a single line of product code. A 256 MB plan
   is out. Whether 512 MB survives real code and real traffic is what a
   soak test still has to answer — and if it does not, the next rung is
   `nf-compute-50` at $12/month, which exceeds the entire budget on
