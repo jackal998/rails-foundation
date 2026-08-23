@@ -1,0 +1,248 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [ main ]
+
+# This repository is PUBLIC, so workflows can be triggered by forked pull
+# requests. Two rules follow, and neither is optional:
+#   1. `pull_request`, never `pull_request_target` - the latter runs with write
+#      permissions and repository secrets against attacker-controlled code.
+#   2. Least privilege by default. A job that needs more asks for it itself.
+permissions:
+  contents: read
+
+# Third-party actions are pinned by full commit SHA, never by tag: a tag is
+# mutable and can be repointed at new code by whoever owns the action. The
+# trailing comment records which version the SHA was, so upgrades stay
+# reviewable, and dependabot.yml bumps them. Resolved 2026-08-23.
+#
+# There are NO credentials anywhere in this file, by design. The Postgres
+# service is job-local and unreachable from outside the runner, so it uses
+# trust authentication and the app connects with DB_HOST / DB_USERNAME only.
+# Do not "helpfully" reintroduce a connection URL with an inline password: the
+# pre-commit secret scan rejects them, correctly, because it cannot tell a
+# throwaway CI credential from a real one.
+
+jobs:
+  scan_ruby:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Set up Ruby
+        uses: ruby/setup-ruby@95ef2b042f9d7a56d8268cba8559e2842e2ad01b # v1
+        with:
+          bundler-cache: true
+
+      - name: Scan for common Rails security vulnerabilities using static analysis
+        run: bin/brakeman --no-pager
+
+      - name: Scan for known security vulnerabilities in gems used
+        run: bin/bundler-audit
+
+  scan_js:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Set up Ruby
+        uses: ruby/setup-ruby@95ef2b042f9d7a56d8268cba8559e2842e2ad01b # v1
+        with:
+          bundler-cache: true
+
+      - name: Scan for security vulnerabilities in JavaScript dependencies
+        run: bin/importmap audit
+
+  lint:
+    runs-on: ubuntu-latest
+    env:
+      RUBOCOP_CACHE_ROOT: tmp/rubocop
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Set up Ruby
+        uses: ruby/setup-ruby@95ef2b042f9d7a56d8268cba8559e2842e2ad01b # v1
+        with:
+          bundler-cache: true
+
+      - name: Prepare RuboCop cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        env:
+          DEPENDENCIES_HASH: ${{ hashFiles('.ruby-version', '**/.rubocop.yml', '**/.rubocop_todo.yml', 'Gemfile.lock') }}
+        with:
+          path: ${{ env.RUBOCOP_CACHE_ROOT }}
+          key: rubocop-${{ runner.os }}-${{ env.DEPENDENCIES_HASH }}-${{ github.ref_name == github.event.repository.default_branch && github.run_id || 'default' }}
+          restore-keys: |
+            rubocop-${{ runner.os }}-${{ env.DEPENDENCIES_HASH }}-
+
+      - name: Lint code for consistent style
+        run: bin/rubocop -f github
+
+  test:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        # Pinned to the same major as compose.yaml. An unpinned `postgres` tag
+        # floats to a new major without a commit, which is how a suite starts
+        # testing against a database production does not run.
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 5432:5432
+        options: --health-cmd="pg_isready" --health-interval=10s --health-timeout=5s --health-retries=3
+
+    env:
+      RAILS_ENV: test
+      DB_HOST: localhost
+      DB_USERNAME: postgres
+
+    steps:
+      - name: Install packages
+        run: sudo apt-get update && sudo apt-get install --no-install-recommends -y libpq-dev libvips
+
+      - name: Checkout code
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Set up Ruby
+        uses: ruby/setup-ruby@95ef2b042f9d7a56d8268cba8559e2842e2ad01b # v1
+        with:
+          bundler-cache: true
+
+      - name: Run tests
+        run: bin/rails db:test:prepare test
+
+  system-test:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 5432:5432
+        options: --health-cmd="pg_isready" --health-interval=10s --health-timeout=5s --health-retries=3
+
+    env:
+      RAILS_ENV: test
+      DB_HOST: localhost
+      DB_USERNAME: postgres
+
+    steps:
+      - name: Install packages
+        run: sudo apt-get update && sudo apt-get install --no-install-recommends -y libpq-dev libvips
+
+      - name: Checkout code
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Set up Ruby
+        uses: ruby/setup-ruby@95ef2b042f9d7a56d8268cba8559e2842e2ad01b # v1
+        with:
+          bundler-cache: true
+
+      - name: Run System Tests
+        run: bin/rails db:test:prepare test:system
+
+      - name: Keep screenshots from failed system tests
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: failure()
+        with:
+          name: screenshots
+          path: ${{ github.workspace }}/tmp/screenshots
+          if-no-files-found: ignore
+
+  # ---------------------------------------------------------------------------
+  # This job is not a test of the application. It is the ENFORCEMENT MECHANISM
+  # for one of the three decisions CLAUDE.md marks as expensive to undo:
+  # "Postgres stays plain Postgres."
+  #
+  # It dumps the database, destroys it, rebuilds it from nothing but the dump on
+  # a stock Postgres image with no vendor extensions, and boots the app against
+  # the result. If this job is ever deleted or allowed to fail, that constraint
+  # stops existing - nothing else checks it.
+  #
+  # Known limit, stated rather than hidden: this covers the PRIMARY database
+  # only. In production Solid Queue / Cache / Cable live in three further
+  # databases, and their portability is not yet checked here.
+  # ---------------------------------------------------------------------------
+  database-portability:
+    name: pg_dump rebuilds the database on stock Postgres and the app still boots
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 5432:5432
+        options: --health-cmd="pg_isready" --health-interval=10s --health-timeout=5s --health-retries=3
+
+    env:
+      RAILS_ENV: test
+      DB_HOST: localhost
+      DB_USERNAME: postgres
+      PGHOST: localhost
+      PGPORT: "5432"
+      PGUSER: postgres
+
+    steps:
+      - name: Install packages
+        run: sudo apt-get update && sudo apt-get install --no-install-recommends -y libpq-dev libvips postgresql-client
+
+      - name: Checkout code
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Set up Ruby
+        uses: ruby/setup-ruby@95ef2b042f9d7a56d8268cba8559e2842e2ad01b # v1
+        with:
+          bundler-cache: true
+
+      - name: Build the schema
+        run: bin/rails db:prepare
+
+      - name: Write a sentinel row
+        # Without this the job would pass against an EMPTY restore: "the app
+        # booted" proves nothing if there was nothing to lose. The final step
+        # reads this row back, so a restore that silently produces an empty
+        # database fails here rather than during an incident.
+        run: |
+          bin/rails runner '
+            User.create!(
+              email_address: "portability-probe@example.invalid",
+              password: "correct-horse-battery-staple"
+            )
+            puts "sentinel written: #{User.count} user(s)"
+          '
+
+      - name: Dump
+        run: |
+          pg_dump --no-owner --no-privileges --format=plain app_test > "${RUNNER_TEMP}/app.sql"
+          echo "dump bytes: $(wc -c < "${RUNNER_TEMP}/app.sql")"
+
+      - name: Destroy the database and rebuild it from the dump alone
+        run: |
+          dropdb app_test
+          createdb app_test
+          psql --quiet --set ON_ERROR_STOP=1 --dbname app_test --file "${RUNNER_TEMP}/app.sql"
+
+      - name: Boot the app against the rebuilt database and read the sentinel back
+        run: |
+          bin/rails runner '
+            u = User.find_by(email_address: "portability-probe@example.invalid")
+            abort("FAIL: sentinel row is missing after restore") if u.nil?
+            abort("FAIL: password digest did not survive") unless u.authenticate("correct-horse-battery-staple")
+            puts "rebuilt and verified: #{u.email_address}"
+          '
