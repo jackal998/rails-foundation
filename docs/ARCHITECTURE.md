@@ -192,16 +192,25 @@ without any.
 
 ## Still unverified — do not build on these
 
-- **The free tier's exact vCPU/RAM.** Still unpublished as of
-  2026-08-23: the pricing page has no free-tier column at all, and the
-  docs state only the object counts (2 services, 2 jobs, 1 addon, up to
-  1 BYOC cluster). **The only way to read it is to create the free
-  project and open a service's compute-plan selector — and creating the
-  project fixes that project's region.** A throwaway free project made
-  purely to read the number is a probe, not the irreversible regional
-  commitment; a project that gets deployed to is the commitment. Keep
-  the two apart deliberately. If the container is 256 MB-class, Rails
-  will not fit — see the measured RSS below.
+- ~~**The free tier's exact vCPU/RAM.**~~ **Settled 2026-08-24** by
+  creating a throwaway free project and reading the compute-plan
+  selector. Free projects may select exactly two plans:
+
+  | Plan | vCPU | Memory |
+  |---|---|---|
+  | `nf-compute-10` | 0.1 shared | 256 MB |
+  | **`nf-compute-20`** | **0.2 shared** | **512 MB** |
+
+  Every larger plan, from `nf-compute-50` through `nf-compute-800-32`,
+  is greyed out and labelled *"Not available due to free project
+  limits"*. Autoscaling is likewise *"not available on free projects"*.
+
+  So the free ceiling is **0.2 shared vCPU / 512 MB**, and the measured
+  269.1 MiB footprint **fits**, at roughly 53% at rest. The earlier fear
+  that the free tier was 256 MB-class — which would have ruled Rails out
+  entirely — was wrong. What remains untested is whether 0.2 of a shared
+  vCPU is enough to boot and serve acceptably; memory was never going to
+  be the only constraint.
 - **Whether a paid web service keeps a free database addon.** The
   cheapest upgrade path assumes it does. Nothing documents that. If it is
   false, the realistic bill is roughly double the assumed step.
@@ -258,6 +267,40 @@ without any.
 - **The local breach-notification deadline in hours.** The statutory duty
   and penalty bands are confirmed; the hour count lives in a sector
   regulation that was not read. Do not assume 72 hours.
+
+## The free tier is not card-free — found 2026-08-24
+
+Creating the managed Postgres addon in a free project raises a modal
+titled **"Add a payment method"**, with fields for card number, expiry
+and CVC. Its own text:
+
+> We require a payment method to verify legitimate users and deter from
+> hosting content that goes against our terms of service.
+> **You will not be charged for any usage while on the Developer
+> Sandbox.** Once a valid card is added, you will be able to create the
+> following: One free project with limited resources.
+
+Creating the *project* did not ask for a card. Creating the *addon* did.
+
+This matters more than the plan sizes, because the billing-safety
+argument in this document rested on a property that turns out not to
+exist: **"no payment method on file, therefore the card cannot be
+charged" is not available on Northflank's free tier.** Using the free
+tier at all means putting a card on the account.
+
+That does not make Northflank wrong — the vendor states usage on the
+Sandbox is not charged, and a stored card is normal industry practice.
+It does mean the choice is no longer "free tier = mechanically safe" vs
+"paid = card exposed". Both branches now involve a stored card, so the
+protection has to be bought some other way: a hard spend cap, a billing
+alert, or a card whose limit is small enough that the worst case is
+survivable. `CLAUDE.md` bans clicking *Upgrade to Pay As You Go*; that
+ban is unaffected, but it is no longer sufficient on its own.
+
+**Not verified:** whether the card is required to create a free project
+from scratch on a fresh account, or only to create resources within one.
+The project here was created before the prompt appeared, so the two
+cannot be separated from this evidence alone.
 
 ## Graduation triggers
 
