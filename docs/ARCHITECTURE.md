@@ -265,9 +265,13 @@ without any.
   soak test still has to answer — and if it does not, the next rung is
   `nf-compute-50` at $12/month, which exceeds the entire budget on
   compute alone.
-- **Latency to the actual endpoint.** Measurements so far are ICMP to a
-  different vendor's object storage in each region — a proxy, not an
-  HTTP/TLS p95 against the real origin.
+- ~~**Latency to the actual endpoint.**~~ **Settled 2026-08-24**, against
+  this application's own deployed origin rather than a proxy for it: 30 of
+  30 requests from Taiwan to `us-central` returned 200, median **693 ms**,
+  p90 782 ms. The same page served from the local box was 82 ms, so the
+  difference is the Pacific crossing and TLS, not the app. Whether 693 ms
+  is acceptable is a judgement rather than a measurement — the graduation
+  trigger below is where that call gets made.
 - **Free-tier WAF and rate-limit specifics at the edge.** What *is*
   confirmed: one IP-only rate-limit rule with a ten-second maximum block,
   and 24 hours of security-event retention. That is a perimeter, not a
