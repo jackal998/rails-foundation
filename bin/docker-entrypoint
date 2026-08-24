@@ -3,6 +3,13 @@
 # If running the rails server then create or migrate existing database
 if [ "${@: -2:1}" == "./bin/rails" ] && [ "${@: -1:1}" == "server" ]; then
   ./bin/rails db:prepare
+
+  # db:prepare cannot create the Solid Cache / Queue / Cable tables when
+  # their databases already exist -- which is always true when one managed
+  # database backs all four roles. Read bin/prepare-solid-databases before
+  # touching this: without it the container exits with code 0 and looks
+  # like a clean shutdown.
+  ./bin/prepare-solid-databases
 fi
 
 exec "${@}"

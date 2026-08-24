@@ -1,0 +1,39 @@
+#!/bin/bash -e
+# Create the Solid Cache / Queue / Cable tables when they are absent.
+#
+# Rails 8.1 ships those three databases as SCHEMA FILES ONLY --
+# db/cache_schema.rb, db/queue_schema.rb, db/cable_schema.rb -- with no
+# db/*_migrate/ directories at all. So `db:prepare` populates them only
+# along the path it takes when a database does not yet exist, and
+# `db:migrate:cache` exits 0 having done nothing.
+#
+# A managed Postgres addon that provisions ONE database forces all four
+# roles onto that database. `db:prepare` then deduplicates them by name,
+# prepares `primary`, and silently skips the other three. Puma later forks
+# the Solid Queue supervisor, it queries solid_queue_recurring_tasks, and
+# the whole container exits -- with EXIT CODE 0, so nothing downstream can
+# read it as a failure. Reproduced locally on 2026-08-24 and then seen
+# again on this app's first real deployment.
+#
+# The only route into an already-existing database is db:schema:load, which
+# Rails refuses in production because it is destructive. The override below
+# is therefore gated on a check that runs against THE SAME CONNECTION the
+# load will target -- SolidCache::Record and friends, not the primary -- so
+# a deployment that really does have four separate databases finds its
+# tables present and loads nothing.
+#
+# The gate fails CLOSED. script/missing_solid_databases.rb raises rather
+# than guessing when it cannot reach a database; `set -e` then aborts here
+# and no destructive task runs.
+
+missing="$(./bin/rails runner script/missing_solid_databases.rb)"
+
+if [ -z "$missing" ]; then
+  echo "==> solid databases: cache, queue and cable are all present"
+  exit 0
+fi
+
+for name in $missing; do
+  echo "==> solid databases: ${name} has no tables, loading db/${name}_schema.rb"
+  DISABLE_DATABASE_ENVIRONMENT_CHECK=1 ./bin/rails "db:schema:load:${name}"
+done
