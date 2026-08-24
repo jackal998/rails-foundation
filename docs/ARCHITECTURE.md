@@ -313,6 +313,44 @@ from scratch on a fresh account, or only to create resources within one.
 The project here was created before the prompt appeared, so the two
 cannot be separated from this evidence alone.
 
+### There is no hard spend cap — read from the docs, 2026-08-24
+
+Evidence tier: the vendor's own documentation, not something observed in
+an account. Weaker than the measurements elsewhere in this file, and it
+should be re-checked inside the billing UI before anyone relies on it.
+
+- The card requirement is policy, not an accident of the flow this repo
+  happened to walk: *"All users must add a payment method to start
+  creating resources on Northflank, regardless of plan selection."*
+- **The control named like a limit is a charge trigger.** *"Billing
+  thresholds trigger automatic billing when your usage reaches predefined
+  spending limits."* Reaching one raises an invoice and **charges the
+  card**; it does not stop the resources. New accounts default to **$50**,
+  the selectable values are $50 / $100 / $250 / $500, **there is no zero**,
+  and turning it off requires contacting support.
+- **Billing alerts only send email.** *"you will be notified on the
+  registered email address"* — no suspension, no block.
+- Suspension happens *after* a charge fails, not instead of one: services
+  are suspended when a threshold invoice cannot be paid.
+
+So the honest position is that **Northflank offers no mechanism that
+mechanically prevents a charge.** What protection exists is of three
+kinds, and only the first is mechanical:
+
+1. **The platform itself refuses non-free plans on a free project** —
+   observed directly: every plan above `nf-compute-20` is greyed out and
+   labelled *"Not available due to free project limits"*, and autoscaling
+   is off. Leaving the free tier therefore takes a deliberate upgrade
+   action, which `CLAUDE.md` already bans.
+2. **A free project accrues $0**, so a $50 threshold is never approached
+   while the ban above holds.
+3. **The card's own limit** is the only backstop that does not depend on
+   the platform behaving as documented.
+
+That is a defensible position, but it is a different one from the
+argument this document originally made, and it should be stated as what
+it is: risk that is *bounded and managed*, not risk that is *impossible*.
+
 ## One database is enough — found 2026-08-24
 
 The free Postgres addon provisions a single database, named once at
