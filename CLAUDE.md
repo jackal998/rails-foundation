@@ -75,14 +75,41 @@ force-push does not un-publish anything.
   **behaviour, not by asking git about patterns**. Create the real files
   and check what git can actually see:
 
+  When those files already exist on the machine, do not fabricate them at
+  all — ask git what it sees of the real ones, which is the same evidence
+  with none of the risk:
+
   ```sh
-  printf 'x\n' > .env
+  git status --porcelain --ignored=matching -- \
+    .env config/master.key config/credentials
+  # '!!' = ignored, correct.  '??' = untracked AND visible = a leak.
+  # Nothing listed = git cannot see the path at all, also correct.
+  ```
+
+  Only when a path is genuinely absent is the fabricate-and-check form
+  needed:
+
+  ```sh
+  # The guard clause is not optional: every path below is a REAL file
+  # this repo may hold, and the test overwrites then deletes it.
+  for f in .env config/master.key config/credentials/production.key; do
+    [ -e "$f" ] && { echo "REFUSING: $f exists — this test would destroy it"; exit 1; }
+  done
+
   mkdir -p config/credentials
-  printf 'x\n' > config/master.key
-  printf 'x\n' > config/credentials/production.key
+  for f in .env config/master.key config/credentials/production.key; do
+    printf 'x\n' > "$f"
+  done
   git status --porcelain    # none of the three may appear
   rm -f .env config/master.key config/credentials/production.key
   ```
+
+  That guard was added on 2026-08-24, after the earlier unguarded version
+  of this very snippet **overwrote and then deleted a working `.env`** —
+  the Postgres password in it was unrecoverable and the database volume
+  had to be rebuilt. A verification step is still a write: it is fully
+  capable of destroying the thing it exists to protect, and the moment of
+  least suspicion is when you are following your own instructions.
 
   Do **not** use `git check-ignore -v` as this test. It exits 0 whenever
   *any* pattern matches — including a negation such as `!.env.example` —

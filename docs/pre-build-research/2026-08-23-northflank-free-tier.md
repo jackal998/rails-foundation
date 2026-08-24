@@ -210,3 +210,69 @@ input + full-screen capture) in the profile that *was* signed in. Worth
 recording only because the same obstacle will recur: **a browser
 automation tool being "connected" says nothing about which browser
 profile's session it holds.**
+
+
+---
+
+# Addendum — 2026-08-24, in-product probe
+
+A disposable free project (`probe-delete-me`, `us-central`) was created,
+read, and deleted the same night. **Observed** unless stated otherwise.
+
+## Free-tier compute plans (N1 — settled)
+
+The compute-plan selector in a free project offers exactly two:
+
+| Plan | vCPU | Memory | Free project |
+|---|---|---|---|
+| `nf-compute-10` | 0.1 shared | 256 MB | selectable |
+| `nf-compute-20` | 0.2 shared | 512 MB | selectable |
+| `nf-compute-50` … `nf-compute-800-32` | — | — | *"Not available due to free project limits"* |
+
+Also shown: *"Autoscaling is not available on free projects."*
+
+Against the measured 269.1 MiB production footprint, 512 MB fits.
+**CPU, not memory, is now the open question:** 0.2 of a shared vCPU has
+not been tested against a Rails boot.
+
+Note on how the form behaves, since it cost several attempts: the
+Resources section is inert until the sections above it validate. Service
+name, then a source, then the plan selector responds. It renders dim
+rather than obviously disabled.
+
+## PostgreSQL addon (partial)
+
+Version list offered: **18, 17, 16, 15, 14, 13, 12** — matching the docs,
+and confirming the 17 pinned in `compose.yaml` and CI is available.
+
+Addon defaults: `nf-compute-20` (0.2 shared / 512 MB), NVMe storage,
+**6 GB** — *"Addon storage cannot be scaled down"* — 1 replica, TLS on,
+and **"Publicly accessible" ticked by default**.
+
+Under Advanced, *"Custom database name"* states:
+
+> By default, the default database created within your addon will be
+> given a random name. If you want to supply a custom name, you can do
+> so below. **This cannot be changed after addon creation.**
+
+The field is singular. **The addon provisions one database**, named once,
+immutable afterwards.
+
+## N2 — still unanswered, and why
+
+Whether that database's user may `CREATE DATABASE` could not be tested:
+clicking *Create addon* raised a **payment-method modal**. No card was
+entered and the addon was never created. See the new section in
+`../ARCHITECTURE.md`.
+
+The question still matters, because a stock Rails 8.1 production
+`database.yml` declares four databases. Two ways out remain, and both are
+deployment-time choices rather than code changes: obtain `CREATE
+DATABASE` rights, or point all four `*_DATABASE_URL` variables at the
+single provided database.
+
+## Cleanup
+
+`probe-delete-me` was deleted via Danger zone → Delete project
+(type-to-confirm). The team's project list is empty again and no payment
+method was added.

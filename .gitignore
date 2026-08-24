@@ -38,6 +38,12 @@
 /db/*.sqlite3-*
 
 # --- local dev ---
+# Compose auto-loads this file when present. It is the standard place for
+# machine-local tweaks, which makes it the standard place a password ends
+# up. Ignored so that cannot reach a public repo.
+compose.override.yaml
+compose.override.yml
+docker-compose.override.yml
 /node_modules
 /coverage
 .byebug_history
