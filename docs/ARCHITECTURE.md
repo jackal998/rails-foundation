@@ -208,9 +208,20 @@ without any.
   So the free ceiling is **0.2 shared vCPU / 512 MB**, and the measured
   269.1 MiB footprint **fits**, at roughly 53% at rest. The earlier fear
   that the free tier was 256 MB-class — which would have ruled Rails out
-  entirely — was wrong. What remains untested is whether 0.2 of a shared
-  vCPU is enough to boot and serve acceptably; memory was never going to
-  be the only constraint.
+  entirely — was wrong.
+
+  **The CPU half was settled the same night** by rebuilding that exact box
+  locally — this repo's production image and `postgres:17-alpine`, each in
+  `--cpus=0.2 --memory=512m`. It boots and serves: first HTTP 200 at 19.2 s
+  including `db:prepare`, then 100 requests at concurrency 10 all returning
+  200 at 21.4 req/s, p90 556 ms, settling at 273.7 MiB of the 512 MB with
+  no OOM kill and no restart. Solid Queue really runs inside Puma — its
+  four processes register themselves in the queue database.
+
+  One caveat belongs with that number: `--cpus` is a hard quota while
+  Northflank's share is *shared* and may burst, so this was the stricter
+  test of the two. Full method and figures:
+  [`pre-build-research/2026-08-24-free-tier-box-test.md`](pre-build-research/2026-08-24-free-tier-box-test.md).
 - **Whether a paid web service keeps a free database addon.** The
   cheapest upgrade path assumes it does. Nothing documents that. If it is
   false, the realistic bill is roughly double the assumed step.
@@ -301,6 +312,44 @@ ban is unaffected, but it is no longer sufficient on its own.
 from scratch on a fresh account, or only to create resources within one.
 The project here was created before the prompt appeared, so the two
 cannot be separated from this evidence alone.
+
+## One database is enough — found 2026-08-24
+
+The free Postgres addon provisions a single database, named once at
+creation and immutable afterwards, and a stock Rails 8.1 production
+`database.yml` declares four (primary, cache, queue, cable). Whether the
+addon's user may `CREATE DATABASE` was the last open blocker, and it could
+not be tested without putting a card on the account.
+
+It no longer needs testing. All four roles were pointed at one physical
+database locally, inside the free-tier box, and the result runs — and runs
+**better** than the four-database layout: 26.3 req/s against 21.4, and
+about 14 MiB less memory, because it maintains one connection pool instead
+of four.
+
+It does need one provisioning step that is not obvious. Rails 8.1 ships
+the Solid databases as schema files with **no migration directories**, so
+`db:prepare` populates them only along the path it takes when a database
+does not exist, and `db:migrate:cache` has nothing to run. Against the
+addon's empty database, once, before any data exists:
+
+```sh
+DISABLE_DATABASE_ENVIRONMENT_CHECK=1 \
+  bin/rails db:prepare db:schema:load:cache \
+            db:schema:load:queue db:schema:load:cable
+```
+
+That override is a provisioning step for an empty database and nothing
+else. Rails refuses `db:schema:load` in production because it is
+destructive, and it is right to; anything that automates this must assert
+the database is empty in the same command, not in a comment above it.
+
+Worth recording separately, because it nearly went into this document as a
+success: the first attempt at this configuration **served HTTP 200 and was
+dead a minute later**, and its container exited with **code 0**. Thruster
+answers on port 80 before Puma's forked Solid Queue plugin finishes
+failing, and an unhandled exception in that fork exits cleanly. Liveness at
+one instant is not liveness, and an exit code is not a verdict.
 
 ## Graduation triggers
 

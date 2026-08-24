@@ -19,6 +19,7 @@ corrected separately, by the owner.
 | File | Question it settles |
 |---|---|
 | [`2026-08-23-northflank-free-tier.md`](2026-08-23-northflank-free-tier.md) | Which regions the Northflank free tier can actually deploy to, what the plan includes, and what the billing exposure is |
+| [`2026-08-24-free-tier-box-test.md`](2026-08-24-free-tier-box-test.md) | Whether this app actually runs inside the free tier's 0.2 vCPU / 512 MB box, and whether one database can serve all four of Rails' production roles |
 
 ## On screenshots
 
