@@ -1,0 +1,139 @@
+#!/bin/bash
+# Maintenance commands for this project, in one discoverable place.
+#
+# Deliberately bin/ and not a Makefile: `make` is present in neither this
+# machine's Git Bash nor its PowerShell, so a Makefile would be a file its
+# owner cannot run. bin/ is Rails' own convention and already this repo's
+# pattern -- bin/ci, bin/setup, bin/dev, bin/jobs, bin/prepare-solid-databases.
+#
+# Everything that touches production goes through the Northflank CLI, which
+# reads its credentials from ~/.northflank. Run `npx @northflank/cli login`
+# once (browser login -- no API token needs to be copied anywhere).
+
+set -euo pipefail
+
+NF="npx --yes @northflank/cli"
+PROJECT="${NF_PROJECT:-rails-foundation}"
+SERVICE="${NF_SERVICE:-web}"
+
+usage() {
+  cat <<'USAGE'
+Usage: bin/ops <command>
+
+  status         Show the deployed service, its build and its deployment state
+  shell          Open an interactive bash shell in the production container
+  console        Open a Rails console in the production container
+  dump [FILE]    pg_dump production to FILE (default: tmp/backups/prod-<ts>.sql)
+  restore-drill FILE
+                 Restore FILE into a throwaway local Postgres and prove the
+                 schema came back. A backup nobody has restored is not a backup.
+
+Exit an interactive session with two quick Ctrl+D.
+USAGE
+}
+
+# Run one command inside the production container. --shell-cmd is not
+# optional: without a shell the CLI can silently discard stdout when there
+# is no TTY, which turns "no output" into a false success.
+exec_prod() {
+  $NF exec service --projectId "$PROJECT" --serviceId "$SERVICE" \
+    --shell-cmd 'bash -c' --cmd "$1"
+}
+
+cmd_dump() {
+  local out="${1:-tmp/backups/prod-$(date -u +%Y%m%dT%H%M%SZ).sql}"
+  local remote="/tmp/ops-dump-$$.sql"
+  mkdir -p "$(dirname "$out")"
+
+  echo "==> dumping production ($PROJECT/$SERVICE) inside the container"
+  # --no-owner/--no-privileges so the dump restores onto a stock Postgres
+  # with a different role name -- the same property CI's portability job
+  # enforces. The dump is written in the pod and downloaded afterwards
+  # rather than streamed, because the CLI prefixes its own banner to
+  # stdout and that would corrupt a piped dump.
+  # --exclude-extension: the managed database has the vendor's monitoring
+  # extensions installed, and pg_dump writes CREATE EXTENSION for them. On a
+  # stock Postgres pg_stat_kcache does not exist, so the restore errored --
+  # found by running the drill on 2026-08-24, not by reading the dump. CI's
+  # portability job cannot catch this: it builds the schema from Rails and
+  # dumps that, so it never sees what the vendor added. Excluding them keeps
+  # the dump what this project promised its backups would be: plain Postgres.
+  exec_prod "pg_dump \"\$DATABASE_URL\" --no-owner --no-privileges --exclude-extension=pg_stat_kcache --exclude-extension=pg_stat_statements -f '$remote' && wc -c '$remote'"
+
+  echo "==> downloading to $out"
+  # MSYS_NO_PATHCONV: Git Bash rewrites a lone /unix/path argument into a
+  # Windows path, so --remotePath /tmp/x.sql reached the CLI as
+  # C:/Users/.../Temp/x.sql and the download failed. Harmless off Windows.
+  local dl_rc=0
+  MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL='*' \
+    $NF download service file --projectId "$PROJECT" --serviceId "$SERVICE" \
+      --localPath "$out" --remotePath "$remote" || dl_rc=$?
+
+  # Remove the dump from the container whether or not the download worked.
+  # The first run of this command left one behind: the download failed,
+  # `set -e` aborted, and the cleanup never ran. A database dump sitting in a
+  # production container is an exposure, so the failure captured above is
+  # reported only AFTER the container is clean.
+  exec_prod "rm -f '$remote'" >/dev/null
+  [ "$dl_rc" -eq 0 ] || { echo "FAIL: download failed (rc=$dl_rc)" >&2; exit 1; }
+
+  # Assert the file is a real dump, not an empty file or an error page.
+  # "It downloaded" is not evidence; a named table is.
+  local bytes
+  bytes=$(wc -c < "$out")
+  echo "==> $out  (${bytes} bytes)"
+  if ! grep -q 'CREATE TABLE public.users' "$out"; then
+    echo "FAIL: the dump does not contain the users table -- not a usable backup" >&2
+    exit 1
+  fi
+  echo "==> verified: schema present. Restore it with: bin/ops restore-drill $out"
+}
+
+cmd_restore_drill() {
+  local dump="${1:?usage: bin/ops restore-drill FILE}"
+  [ -f "$dump" ] || { echo "no such dump: $dump" >&2; exit 1; }
+
+  # NOT `local`: the EXIT trap runs in the top-level shell, where a
+  # function-local would be out of scope -- and under `set -u` that made the
+  # trap itself die, so the drill printed PASSED while leaving its container
+  # running. Found by running it, not by reading it.
+  DRILL_BOX="ops-restore-drill-$$"
+  local pw="drill-$$"
+  trap 'docker rm -f "${DRILL_BOX:-}" >/dev/null 2>&1 || true' EXIT
+
+  echo "==> booting a throwaway Postgres (nothing of yours is touched)"
+  docker run -d --name "$DRILL_BOX" -e POSTGRES_PASSWORD="$pw" postgres:17-alpine >/dev/null
+  for _ in $(seq 1 60); do
+    docker exec "$DRILL_BOX" pg_isready -U postgres >/dev/null 2>&1 && break
+    sleep 1
+  done
+
+  echo "==> restoring $dump"
+  # ON_ERROR_STOP is the difference between a drill and a decoration. Without
+  # it psql prints an error, carries on, and the table count below still looks
+  # healthy -- this script's first version reported PASSED underneath two
+  # restore errors. Any error now fails the drill.
+  docker exec -i "$DRILL_BOX" psql -q -v ON_ERROR_STOP=1 -U postgres -d postgres < "$dump" > /dev/null
+
+  echo "==> what came back:"
+  docker exec "$DRILL_BOX" psql -U postgres -d postgres -tAc \
+    "select tablename from pg_tables where schemaname='public' order by 1"
+
+  local n
+  n=$(docker exec "$DRILL_BOX" psql -U postgres -d postgres -tAc \
+    "select count(*) from pg_tables where schemaname='public'" | tr -d '[:space:]')
+  echo "==> $n tables restored"
+  [ "$n" -gt 0 ] || { echo "FAIL: the dump restored nothing" >&2; exit 1; }
+  echo "==> restore drill PASSED"
+}
+
+case "${1:-help}" in
+  status)  $NF list services --projectId "$PROJECT" ;;
+  shell)   exec $NF exec service --projectId "$PROJECT" --serviceId "$SERVICE" ;;
+  console) exec $NF exec service --projectId "$PROJECT" --serviceId "$SERVICE" \
+             --shell-cmd 'bash -c' --cmd './bin/rails console' ;;
+  dump)            shift; cmd_dump "$@" ;;
+  restore-drill)   shift; cmd_restore_drill "$@" ;;
+  help|-h|--help)  usage ;;
+  *) echo "unknown command: $1" >&2; echo; usage; exit 1 ;;
+esac
