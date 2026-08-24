@@ -246,8 +246,17 @@ Version list offered: **18, 17, 16, 15, 14, 13, 12** — matching the docs,
 and confirming the 17 pinned in `compose.yaml` and CI is available.
 
 Addon defaults: `nf-compute-20` (0.2 shared / 512 MB), NVMe storage,
-**6 GB** — *"Addon storage cannot be scaled down"* — 1 replica, TLS on,
-and **"Publicly accessible" ticked by default**.
+**6 GB** — *"Addon storage cannot be scaled down"* — 1 replica, TLS on.
+
+> **Correction, 2026-08-24.** This originally read *"Publicly accessible
+> ticked by default"*. That was wrong: on the create form the control is
+> **off** by default, and the created addon reports *"Private networking
+> only"*. The error came from reading a dim checkmark as a lit one — the
+> same misreading was repeated live the next day, clicking the control
+> *on* while intending to turn it off, and was caught only by cropping the
+> before and after screenshots and comparing them side by side. Two
+> states of one control that differ by brightness alone are not readable
+> from a glance at a full-screen capture; compare, do not remember.
 
 Under Advanced, *"Custom database name"* states:
 
