@@ -9,6 +9,12 @@
 # Everything that touches production goes through the Northflank CLI, which
 # reads its credentials from ~/.northflank. Run `npx @northflank/cli login`
 # once (browser login -- no API token needs to be copied anywhere).
+#
+# What this script does NOT do, stated here so nothing below reads as more
+# than it is: `dump` writes a plaintext copy to local disk. It is not
+# encrypted, not off this machine, and not on a retention lock, so it is not
+# yet the backup docs/ARCHITECTURE.md commits this project to. What it does
+# close is a different gap -- that no restore had ever been rehearsed.
 
 set -euo pipefail
 
@@ -24,41 +30,85 @@ Usage: bin/ops <command>
   shell          Open an interactive bash shell in the production container
   console        Open a Rails console in the production container
   dump [FILE]    pg_dump production to FILE (default: tmp/backups/prod-<ts>.sql)
+                 Local, plaintext, this machine only -- see the note in this file.
   restore-drill FILE
-                 Restore FILE into a throwaway local Postgres and prove the
-                 schema came back. A backup nobody has restored is not a backup.
+                 Restore FILE into a throwaway local Postgres and check that
+                 every table AND every row the dump DECLARES actually arrived.
+
+The two backup checks answer different questions and neither replaces the
+other. `dump` asks "is this file everything production has right now" -- only
+it can, because only it still has production in reach. `restore-drill` asks
+"does this file restore into a working database" -- and it can only ever hold
+a file to its own declared contents, because a dump is both the claim and the
+evidence.
 
 Exit an interactive session with two quick Ctrl+D.
 USAGE
 }
 
+# Resolve the one running container and pin every later call to it.
+#
+# Without this, each CLI invocation picks a running container on its own. With
+# more than one replica the dump could be written on A, the download read from
+# B, and the cleanup delete nothing on C -- leaving a copy of the database in
+# a production container while the script exits 0. Refusing to guess is the
+# only safe behaviour, so more or fewer than one running container is an error
+# rather than a coin flip.
+resolve_instance() {
+  local json
+  json="$($NF get service containers --projectId "$PROJECT" --serviceId "$SERVICE" -o json 2>/dev/null)"
+  printf '%s' "$json" | node -e '
+    let s = "";
+    process.stdin.on("data", d => s += d).on("end", () => {
+      let cs;
+      try { const d = JSON.parse(s); cs = (d.data || d).containers || []; }
+      catch (e) { console.error("could not read the container list"); process.exit(1); }
+      const running = cs.filter(c => c.status === "TASK_RUNNING");
+      if (running.length !== 1) {
+        console.error("expected exactly 1 running container, found " + running.length +
+                      " -- refusing to guess which one to operate on");
+        process.exit(1);
+      }
+      process.stdout.write(running[0].name);
+    });
+  '
+}
+
 # Run one command inside the production container. --shell-cmd is not
-# optional: without a shell the CLI can silently discard stdout when there
-# is no TTY, which turns "no output" into a false success.
+# optional: without a shell the CLI can silently discard stdout when there is
+# no TTY, which turns "no output" into a false success.
 exec_prod() {
   $NF exec service --projectId "$PROJECT" --serviceId "$SERVICE" \
-    --shell-cmd 'bash -c' --cmd "$1"
+    --instance "$INSTANCE" --shell-cmd 'bash -c' --cmd "$1"
 }
 
 cmd_dump() {
   local out="${1:-tmp/backups/prod-$(date -u +%Y%m%dT%H%M%SZ).sql}"
-  local remote="/tmp/ops-dump-$$.sql"
   mkdir -p "$(dirname "$out")"
 
-  echo "==> dumping production ($PROJECT/$SERVICE) inside the container"
-  # --no-owner/--no-privileges so the dump restores onto a stock Postgres
-  # with a different role name -- the same property CI's portability job
-  # enforces. The dump is written in the pod and downloaded afterwards
-  # rather than streamed, because the CLI prefixes its own banner to
-  # stdout and that would corrupt a piped dump.
-  # --exclude-extension: the managed database has the vendor's monitoring
-  # extensions installed, and pg_dump writes CREATE EXTENSION for them. On a
-  # stock Postgres pg_stat_kcache does not exist, so the restore errored --
-  # found by running the drill on 2026-08-24, not by reading the dump. CI's
-  # portability job cannot catch this: it builds the schema from Rails and
-  # dumps that, so it never sees what the vendor added. Excluding them keeps
-  # the dump what this project promised its backups would be: plain Postgres.
-  exec_prod "pg_dump \"\$DATABASE_URL\" --no-owner --no-privileges --exclude-extension=pg_stat_kcache --exclude-extension=pg_stat_statements -f '$remote' && wc -c '$remote'"
+  INSTANCE="$(resolve_instance)"
+  echo "==> instance $INSTANCE"
+
+  # The dump must be removed from the container on EVERY exit path, including
+  # the one where pg_dump itself fails partway and `set -e` would otherwise
+  # end the script right there with a partial copy of the database left
+  # behind. An earlier version cleaned up on the happy path only, and a failed
+  # download duly left a dump sitting in production.
+  #
+  # EXIT rather than RETURN, and a global rather than a `local`, for the same
+  # reason the drill's trap needed both: a trap fires in the top-level shell,
+  # where a function-local name does not exist and `set -u` kills the trap
+  # itself -- which is how the leak stayed invisible the first time.
+  DUMP_REMOTE="/tmp/ops-dump-$$.sql"
+  DUMP_TMP="$(mktemp -d)"
+  trap 'rm -rf "${DUMP_TMP:-}"; exec_prod "rm -f ${DUMP_REMOTE:-/nonexistent}" >/dev/null 2>&1 || echo "WARNING: could not remove ${DUMP_REMOTE:-} from the production container -- delete it by hand" >&2' EXIT
+
+  echo "==> dumping production ($PROJECT/$SERVICE)"
+  # --no-owner/--no-privileges so the dump restores onto a stock Postgres with
+  # a different role name -- the property CI's portability job enforces.
+  # Written in the pod and downloaded afterwards rather than streamed, because
+  # the CLI prefixes its own banner to stdout and that would corrupt a pipe.
+  exec_prod "pg_dump \"\$DATABASE_URL\" --no-owner --no-privileges --exclude-extension=pg_stat_kcache --exclude-extension=pg_stat_statements -f '$DUMP_REMOTE' && wc -c '$DUMP_REMOTE'"
 
   echo "==> downloading to $out"
   # MSYS_NO_PATHCONV: Git Bash rewrites a lone /unix/path argument into a
@@ -67,26 +117,133 @@ cmd_dump() {
   local dl_rc=0
   MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL='*' \
     $NF download service file --projectId "$PROJECT" --serviceId "$SERVICE" \
-      --localPath "$out" --remotePath "$remote" || dl_rc=$?
+      --instance "$INSTANCE" --localPath "$out" --remotePath "$DUMP_REMOTE" || dl_rc=$?
+  [ "$dl_rc" -eq 0 ] || { echo "FAIL: download failed (rc=$dl_rc)" >&2; return 1; }
 
-  # Remove the dump from the container whether or not the download worked.
-  # The first run of this command left one behind: the download failed,
-  # `set -e` aborted, and the cleanup never ran. A database dump sitting in a
-  # production container is an exposure, so the failure captured above is
-  # reported only AFTER the container is clean.
-  exec_prod "rm -f '$remote'" >/dev/null
-  [ "$dl_rc" -eq 0 ] || { echo "FAIL: download failed (rc=$dl_rc)" >&2; exit 1; }
+  echo "==> $out  ($(wc -c < "$out") bytes)"
+  dump_manifest "$out" > "$DUMP_TMP/manifest.tsv"
+  verify_dump "$out"
+  compare_against_live "$out"
+}
 
-  # Assert the file is a real dump, not an empty file or an error page.
-  # "It downloaded" is not evidence; a named table is.
-  local bytes
-  bytes=$(wc -c < "$out")
-  echo "==> $out  (${bytes} bytes)"
-  if ! grep -q 'CREATE TABLE public.users' "$out"; then
-    echo "FAIL: the dump does not contain the users table -- not a usable backup" >&2
-    exit 1
+# Compare the dump's own row counts against the live database it came from.
+#
+# This check has to happen HERE and cannot be moved into restore-drill,
+# because a dump file is both the claim and the evidence: strip every row out
+# of one and its declared counts drop to zero with them, so the restore still
+# matches perfectly and reports success. That is not hypothetical -- it is
+# exactly what the drill did when it was asked to catch a hollowed-out backup.
+# Only production can say whether the dump is complete, and production is only
+# in reach at dump time.
+compare_against_live() {
+  local out="$1"
+  echo "==> comparing the dump against the live database"
+
+  local live_raw
+  live_raw="$(exec_prod "psql \"\$DATABASE_URL\" -tA -F'|' -c \"select t.table_name, (xpath('/row/cnt/text()', query_to_xml(format('select count(*) as cnt from %I.%I', t.table_schema, t.table_name), false, true, '')))[1]::text::bigint from information_schema.tables t where t.table_schema='public' and t.table_type='BASE TABLE' order by 1\"" 2>&1)"
+
+  # The CLI wraps its own banner around the output, so keep only the lines
+  # that are actually name|count.
+  local live_counts
+  live_counts="$(printf '%s\n' "$live_raw" | grep -E '^[a-z_][a-z_0-9]*\|[0-9]+$' || true)"
+  if [ -z "$live_counts" ]; then
+    echo "FAIL: could not read row counts from the live database -- cannot confirm the dump is complete" >&2
+    return 1
   fi
-  echo "==> verified: schema present. Restore it with: bin/ops restore-drill $out"
+
+  local bad=0 checked=0
+  while IFS='|' read -r table live; do
+    [ -n "$table" ] || continue
+    checked=$((checked + 1))
+
+    # Presence first. Comparing only counts let a table vanish from the dump
+    # entirely as long as it was empty in production: absent was read as zero,
+    # zero equalled zero, and both backup checks passed on a dump that could
+    # not restore the table at all. An empty table is still schema, and the
+    # application still expects it to exist after a recovery.
+    if ! grep -qxF "T	public.$table	0" "$DUMP_TMP/manifest.tsv"; then
+      echo "  MISSING FROM DUMP: $table exists in the live database but the dump does not declare it" >&2
+      bad=$((bad + 1))
+      continue
+    fi
+
+    local dumped
+    dumped="$(awk -F'\t' -v t="public.$table" '$1=="R" && $2==t { print $3 }' "$DUMP_TMP/manifest.tsv")"
+    dumped="${dumped:-0}"
+
+    # Row counts are NOT asserted equal, and that is deliberate. The dump is a
+    # snapshot; these counts are read afterwards from a database that is still
+    # working. Solid Queue's recurring tasks alone move solid_queue_jobs every
+    # minute, so demanding equality would fail this command at random on a
+    # perfectly good backup -- and a check that cries wolf is a check somebody
+    # eventually stops running.
+    #
+    # What is not ambiguous is a table that holds rows in production and none
+    # at all in the dump. That is the hollowed-out backup this whole comparison
+    # exists to catch, and no amount of ordinary churn produces it.
+    if [ "$dumped" -eq 0 ] && [ "$live" -gt 0 ]; then
+      echo "  EMPTY IN DUMP: $table has $live rows live but none in the dump" >&2
+      bad=$((bad + 1))
+    elif [ "$dumped" != "$live" ]; then
+      echo "  (drift: $table $dumped in dump, $live now live -- expected on a running system)"
+    fi
+  done <<< "$live_counts"
+
+  [ "$bad" -eq 0 ] || { echo "FAIL: the dump does not match the live database" >&2; return 1; }
+  echo "==> $checked live tables are all present in the dump, none of them empty in it"
+}
+
+# Assert the downloaded file is this application's database and is portable.
+# "It downloaded" is not evidence.
+verify_dump() {
+  local out="$1"
+
+  # Anchored on the opening parenthesis. An unanchored match was happy with
+  # public.users_archive and would have called a dump missing the real users
+  # table verified.
+  if ! grep -qE '^CREATE TABLE public\.users \(' "$out"; then
+    echo "FAIL: no CREATE TABLE public.users in the dump -- this is not a usable backup" >&2
+    return 1
+  fi
+
+  # A denylist of two extension names only holds until the vendor enables a
+  # third. Ask the opposite question instead: does the dump carry ANY
+  # extension? On a stock Postgres each one is a restore error waiting to
+  # happen, so the operator hears about it now rather than during a recovery.
+  # The file is kept either way -- a flawed dump still beats none -- but the
+  # command fails so nothing downstream treats it as clean.
+  #
+  # The `|| true` is not decoration. Under `set -o pipefail` a grep that
+  # matches nothing fails the whole pipeline, the command substitution fails
+  # with it, and `set -e` kills this function before a single line is printed
+  # -- so a perfectly clean dump exited 1 with no explanation at all. A guard
+  # that cannot survive the case it is looking for is worse than none: this
+  # one turned every good backup into a silent failure.
+  #
+  # plpgsql is excepted because every stock PostgreSQL ships it: rejecting it
+  # would fail a dump that restores perfectly well, and a check that refuses
+  # good input gets switched off by whoever it blocks at three in the morning.
+  local exts
+  exts="$( { grep -E '^CREATE EXTENSION' "$out" || true; } | sed -E 's/.*EXISTS ([a-z_0-9]+).*/\1/' | grep -vx 'plpgsql' | sort -u | tr '\n' ' ' || true)"
+  if [ -n "${exts// /}" ]; then
+    echo "FAIL: the dump carries extensions that a stock Postgres may not have: $exts" >&2
+    echo "      the file is kept at $out, but add each name to --exclude-extension before trusting it" >&2
+    return 1
+  fi
+
+  echo "==> verified: users table present, no extension dependencies"
+  echo "==> rehearse it with: bin/ops restore-drill $out"
+}
+
+# Read back what the dump claims to contain: every table it declares, and the
+# number of rows in every COPY block. The drill compares reality against this.
+dump_manifest() {
+  awk '
+    /^CREATE TABLE / { name = $3; gsub(/[^a-zA-Z0-9_.]/, "", name); print "T\t" name "\t0"; next }
+    /^COPY .* FROM stdin;$/ { tbl = $2; n = 0; intable = 1; next }
+    intable == 1 && $0 == "\\." { print "R\t" tbl "\t" n; intable = 0; next }
+    intable == 1 { n++ }
+  ' "$1"
 }
 
 cmd_restore_drill() {
@@ -98,40 +255,87 @@ cmd_restore_drill() {
   # trap itself die, so the drill printed PASSED while leaving its container
   # running. Found by running it, not by reading it.
   DRILL_BOX="ops-restore-drill-$$"
+  DRILL_TMP="$(mktemp -d)"
   local pw="drill-$$"
-  trap 'docker rm -f "${DRILL_BOX:-}" >/dev/null 2>&1 || true' EXIT
+
+  # -v is load-bearing. postgres:17-alpine declares VOLUME on its data
+  # directory, so every run without -v left an anonymous volume holding a full
+  # copy of the restored database on this machine -- eleven of them, about
+  # 500 MB, before anyone looked. The failure is reported rather than swallowed:
+  # a cleanup that quietly does not happen is how they accumulated.
+  trap 'rm -rf "${DRILL_TMP:-}"; docker rm -f -v "${DRILL_BOX:-}" >/dev/null 2>&1 || echo "WARNING: could not remove container ${DRILL_BOX:-} -- remove it and its volume by hand" >&2' EXIT
 
   echo "==> booting a throwaway Postgres (nothing of yours is touched)"
   docker run -d --name "$DRILL_BOX" -e POSTGRES_PASSWORD="$pw" postgres:17-alpine >/dev/null
+  local ready=0
   for _ in $(seq 1 60); do
-    docker exec "$DRILL_BOX" pg_isready -U postgres >/dev/null 2>&1 && break
+    if docker exec "$DRILL_BOX" pg_isready -U postgres >/dev/null 2>&1; then ready=1; break; fi
     sleep 1
   done
+  [ "$ready" -eq 1 ] || { echo "FAIL: the throwaway Postgres never became ready" >&2; exit 1; }
 
   echo "==> restoring $dump"
   # ON_ERROR_STOP is the difference between a drill and a decoration. Without
-  # it psql prints an error, carries on, and the table count below still looks
+  # it psql prints an error, carries on, and the checks below still look
   # healthy -- this script's first version reported PASSED underneath two
-  # restore errors. Any error now fails the drill.
+  # restore errors.
   docker exec -i "$DRILL_BOX" psql -q -v ON_ERROR_STOP=1 -U postgres -d postgres < "$dump" > /dev/null
 
-  echo "==> what came back:"
-  docker exec "$DRILL_BOX" psql -U postgres -d postgres -tAc \
-    "select tablename from pg_tables where schemaname='public' order by 1"
+  dump_manifest "$dump" > "$DRILL_TMP/manifest.tsv"
+  local declared_tables declared_rows
+  declared_tables=$(grep -c '^T' "$DRILL_TMP/manifest.tsv" || true)
+  declared_rows=$(awk -F'\t' '$1=="R" { s += $3 } END { print s + 0 }' "$DRILL_TMP/manifest.tsv")
+  echo "==> the dump declares $declared_tables tables and $declared_rows rows"
 
-  local n
-  n=$(docker exec "$DRILL_BOX" psql -U postgres -d postgres -tAc \
-    "select count(*) from pg_tables where schemaname='public'" | tr -d '[:space:]')
-  echo "==> $n tables restored"
-  [ "$n" -gt 0 ] || { echo "FAIL: the dump restored nothing" >&2; exit 1; }
-  echo "==> restore drill PASSED"
+  # Counting tables was the old check, and it could not tell a full backup
+  # from an empty one: a dump whose COPY blocks were stripped restored the
+  # same table count and reported PASSED. It also accepted any schema at all,
+  # so a file containing one unrelated table passed. Both are checked now.
+  local bad=0
+  while IFS=$'\t' read -r kind name count; do
+    case "$kind" in
+      T)
+        if [ "$(psql_drill "select to_regclass('$name') is not null")" != "t" ]; then
+          echo "  MISSING TABLE: $name is in the dump but not in the restore" >&2
+          bad=$((bad + 1))
+        fi
+        ;;
+      R)
+        local actual
+        actual="$(psql_drill "select count(*) from $name")"
+        if [ "$actual" != "$count" ]; then
+          echo "  ROW MISMATCH: $name restored $actual rows, the dump carries $count" >&2
+          bad=$((bad + 1))
+        else
+          echo "  $name: $count rows"
+        fi
+        ;;
+    esac
+  done < "$DRILL_TMP/manifest.tsv"
+
+  # This is this project's drill, not a generic one. A dump without the users
+  # table is not this application's database, whatever else restored cleanly.
+  if [ "$(psql_drill "select to_regclass('public.users') is not null")" != "t" ]; then
+    echo "  MISSING TABLE: public.users -- this is not this application's database" >&2
+    bad=$((bad + 1))
+  fi
+
+  [ "$bad" -eq 0 ] || { echo "==> restore drill FAILED: $bad problem(s)" >&2; exit 1; }
+  echo "==> restore drill PASSED: every declared table and row arrived"
+}
+
+psql_drill() {
+  docker exec "$DRILL_BOX" psql -U postgres -d postgres -tAc "$1" | tr -d '[:space:]'
 }
 
 case "${1:-help}" in
   status)  $NF list services --projectId "$PROJECT" ;;
-  shell)   exec $NF exec service --projectId "$PROJECT" --serviceId "$SERVICE" ;;
-  console) exec $NF exec service --projectId "$PROJECT" --serviceId "$SERVICE" \
-             --shell-cmd 'bash -c' --cmd './bin/rails console' ;;
+  shell)   INSTANCE="$(resolve_instance)"
+           exec $NF exec service --projectId "$PROJECT" --serviceId "$SERVICE" \
+             --instance "$INSTANCE" ;;
+  console) INSTANCE="$(resolve_instance)"
+           exec $NF exec service --projectId "$PROJECT" --serviceId "$SERVICE" \
+             --instance "$INSTANCE" --shell-cmd 'bash -c' --cmd './bin/rails console' ;;
   dump)            shift; cmd_dump "$@" ;;
   restore-drill)   shift; cmd_restore_drill "$@" ;;
   help|-h|--help)  usage ;;

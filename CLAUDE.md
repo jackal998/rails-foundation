@@ -35,7 +35,14 @@ do not let a plausible-sounding refactor erode them.
    PostgREST, no vendor-specific realtime or data APIs. The CI job that
    restores a `pg_dump` onto a vanilla Postgres image and boots the app
    is what enforces this — if that job is ever deleted or skipped, the
-   constraint is gone.
+   constraint is gone. **It covers the primary database only**, which is
+   stated here rather than hidden because a half-checked constraint gets
+   trusted like a checked one: the three Solid schemas are not restored
+   onto vanilla Postgres by anything. `bin/ops dump` refuses a dump that
+   carries any extension a stock Postgres might lack — added after the
+   managed database's monitoring extensions turned up inside a real
+   backup — and `production-image` boots the whole thing on one database,
+   but neither closes that gap.
 3. **Region is fixed. App and database never split across regions.**
    Region is chosen at provisioning and changing it means a full
    dump/restore with downtime.
@@ -122,8 +129,19 @@ force-push does not un-publish anything.
   patterns are a paid feature — this hook is the only real defence.
 - No absolute home paths, no NAS/LAN/VPN hostnames or IPs, no password
   manager vault or item names, no `op://` references, no personal data.
-  Use `<you>` / `<USER_HOME>`-style placeholders. `.gitleaks.toml`
-  enforces the first and last of these mechanically.
+  Use `<you>` / `<USER_HOME>`-style placeholders.
+
+  Of that list, exactly two things are checked by a machine: absolute
+  home paths, by `bin/check-personal-paths` in CI, and one national-ID
+  shape, by `.gitleaks.toml`. Hostnames, vault names, `op://` references,
+  names, email addresses and phone numbers are **not** detected by
+  anything — they are a rule you follow, not a rule that catches you.
+
+  The home-path check lives outside gitleaks because it has to:
+  gitleaks' default ruleset allowlists Unix home paths globally and
+  discards the finding after the rule matches, so the rule in
+  `.gitleaks.toml` has never once fired on one. That was found on
+  2026-08-25, having been believed enforced since the first commit.
 - Rails encrypted credentials (`config/credentials.yml.enc`) **are** safe
   to commit. The key that decrypts them is not.
 

@@ -28,7 +28,10 @@ db/schema.rb    linguist-generated
 vendor/**       linguist-vendored
 
 # Makes `git diff` on encrypted credentials show the DECRYPTED diff instead of
-# unreadable ciphertext. Requires the local driver, which Rails installs:
+# unreadable ciphertext -- but ONLY once the driver exists in the local git
+# config, and it is per-clone, not something this file can bring with it.
+# Without it git shows ciphertext and says nothing about why. Verified absent
+# in the clone this was written in, so treat it as off until you have run:
 #   git config diff.rails_credentials.textconv "bin/rails credentials:diff"
 config/credentials.yml.enc      diff=rails_credentials
 config/credentials/*.yml.enc    diff=rails_credentials

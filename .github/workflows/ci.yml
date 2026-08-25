@@ -59,6 +59,81 @@ jobs:
       - name: Scan for security vulnerabilities in JavaScript dependencies
         run: bin/importmap audit
 
+  # CLAUDE.md calls the local gitleaks pre-commit hook "the only real defence"
+  # for this public repository, because GitHub's free secret scanning has no
+  # pattern for a Rails master key and custom patterns are a paid feature.
+  # That defence existed on exactly one workstation. A different machine, a
+  # second contributor, or an edit made in the GitHub web UI never met it at
+  # all, and nothing here would have noticed. This job is the half of that
+  # promise the repository can keep on its own.
+  #
+  # It does NOT replace the local hook, and neither of them is absolute. The
+  # hook stops a secret being committed, but it is machine-local and the global
+  # wrapper fails open when gitleaks is not installed. This job stops one being
+  # merged, but only where a branch ruleset marks the check required -- without
+  # that, GitHub will happily merge a red build. Both halves have to be true
+  # for the claim in CLAUDE.md to hold; neither is enforceable from inside this
+  # file, so neither is asserted here.
+  secret_scan:
+    # Named for what it establishes, which is narrower than "there are no
+    # secrets": a scan can only report that the patterns it carries matched
+    # nothing. .gitleaks.toml has known blind spots, documented in it.
+    name: gitleaks matches no known secret pattern, and no personal paths are tracked
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # gitleaks scans commits, not the working tree. Without full history
+          # it would scan one commit and report a clean result that means
+          # nothing.
+          fetch-depth: 0
+
+      # Deliberately the released binary rather than gitleaks-action: the
+      # action requires a licence key for organisation accounts, which is a
+      # dependency on someone else's pricing page that would fail this job on a
+      # day nobody changed anything. A pinned version with its published
+      # SHA-256 checked before it runs is reproducible and answers to no one.
+      - name: Install gitleaks 8.30.1, verified by checksum
+        env:
+          GITLEAKS_VERSION: 8.30.1
+          GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+        run: |
+          set -euo pipefail
+          url="https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          curl -sSfL "$url" -o gitleaks.tar.gz
+          echo "${GITLEAKS_SHA256}  gitleaks.tar.gz" | sha256sum -c -
+          tar -xzf gitleaks.tar.gz gitleaks
+          ./gitleaks version
+
+      # Before trusting a clean scan, prove the rules can still fail. A green
+      # gitleaks run means only that nothing matched, so a .gitleaks.toml
+      # edited until a rule matches nothing at all leaves this job greener than
+      # it was and the repository less protected. Both directions per rule.
+      - name: Prove the repository's own gitleaks rules still work
+        env:
+          GITLEAKS: ./gitleaks
+        run: ./bin/check-gitleaks-rules
+
+      # --redact is not optional in a public repository. Without it a detected
+      # secret is printed verbatim into a world-readable build log, so the
+      # scan that found the leak publishes it a second time.
+      - name: Scan every commit for secrets
+        run: ./gitleaks git --config .gitleaks.toml --redact --verbose .
+
+      # Separate from gitleaks on purpose: its default ruleset allowlists Unix
+      # home-directory findings, so the home-path rule in .gitleaks.toml cannot
+      # see them however it is written. The script names the exact allowlist
+      # entries and proves its own pattern before trusting a quiet answer -- an
+      # earlier version of it reported the tree clean while matching nothing at
+      # all.
+      - name: Prove the personal-path check can still tell its two answers apart
+        run: ./bin/check-personal-paths --self-test
+
+      - name: No absolute home paths with a real username in tracked files
+        run: ./bin/check-personal-paths
+
   lint:
     runs-on: ubuntu-latest
     env:
@@ -221,3 +296,112 @@ jobs:
             abort("FAIL: password digest did not survive") unless u.authenticate("correct-horse-battery-staple")
             puts "rebuilt and verified: #{u.email_address}"
           '
+
+  # ---------------------------------------------------------------------------
+  # The production IMAGE, booted the way production boots it.
+  #
+  # Every other job in this file runs on the runner with ruby/setup-ruby, so
+  # until now nothing here had ever built the Dockerfile -- while README.md and
+  # the Dockerfile itself both claimed local, CI and production could not drift
+  # onto different base images. They could, and only a deployment would have
+  # found out.
+  #
+  # It boots against ONE database serving all four Rails roles, because that is
+  # what the managed addon provides. That exact shape took production down on
+  # 2026-08-24: db:prepare cannot create the Solid tables when their database
+  # already exists, Puma's queue supervisor then exits, and it takes the
+  # container with it -- reporting EXIT CODE 0, so nothing downstream reads it
+  # as a failure. Hence the assertions below are what they are. "It answered
+  # once" is exactly the evidence that deployment produced before dying.
+  #
+  # No RAILS_MASTER_KEY: this is a public repository, so a workflow triggered by
+  # a fork has no secrets, and a check that only runs for trusted branches is
+  # not a check. SECRET_KEY_BASE covers what the app actually reads.
+  # ---------------------------------------------------------------------------
+  production-image:
+    name: the production image boots on one database and stays up
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Build the production image
+        run: docker build -t rf:ci .
+
+      - name: Boot it against one database serving all four roles
+        run: |
+          set -euo pipefail
+          docker network create rfci
+          docker run -d --name rfci-db --network rfci \
+            -e POSTGRES_USER=postgres -e POSTGRES_HOST_AUTH_METHOD=trust \
+            postgres:17-alpine
+          for _ in $(seq 1 60); do
+            docker exec rfci-db pg_isready -U postgres >/dev/null 2>&1 && break
+            sleep 1
+          done
+          docker exec rfci-db psql -U postgres -c "create database app_production"
+
+          URL="postgres://postgres@rfci-db:5432/app_production"
+
+          # Generated, never written down. A literal here was rejected by the
+          # pre-commit scan -- correctly, and by a rule widened earlier in this
+          # same branch: nothing can tell a throwaway CI value from a real one
+          # by looking at it, which is exactly why this file's header says it
+          # carries no credentials. A fresh one per run is also simply better.
+          docker run -d --name rfci-app --network rfci -p 127.0.0.1:3010:80 \
+            -e RAILS_ENV=production -e SOLID_QUEUE_IN_PUMA=true \
+            -e SECRET_KEY_BASE="$(openssl rand -hex 32)" \
+            -e DATABASE_URL="$URL" -e PRIMARY_DATABASE_URL="$URL" \
+            -e CACHE_DATABASE_URL="$URL" -e QUEUE_DATABASE_URL="$URL" \
+            -e CABLE_DATABASE_URL="$URL" rf:ci
+
+      - name: It serves /up
+        run: |
+          set -euo pipefail
+          for i in $(seq 1 90); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 http://127.0.0.1:3010/up || true)
+            if [ "$code" = "200" ]; then echo "/up 200 after ${i}s"; exit 0; fi
+            sleep 1
+          done
+          echo "FAIL: /up never returned 200"
+          docker logs rfci-app
+          exit 1
+
+      # The failure this exists for answered one request and died a minute
+      # later, so answering once proves nothing. Forty-five seconds, and the
+      # restart count has to be zero: a container that died and came back is
+      # not a container that stayed up.
+      - name: It is still alive 45 seconds later
+        run: |
+          set -euo pipefail
+          sleep 45
+          status=$(docker inspect -f '{{.State.Status}}' rfci-app)
+          restarts=$(docker inspect -f '{{.RestartCount}}' rfci-app)
+          code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 http://127.0.0.1:3010/up || true)
+          echo "status=$status restarts=$restarts /up=$code"
+          if [ "$status" != "running" ] || [ "$restarts" != "0" ] || [ "$code" != "200" ]; then
+            echo "FAIL: the container did not stay up"
+            docker logs rfci-app
+            exit 1
+          fi
+
+      # bin/prepare-solid-databases is the fix for the outage above and nothing
+      # else in CI exercises it: the portability job runs bin/rails directly and
+      # never goes through the entrypoint. Counting the tables is what proves it
+      # ran; counting the registered processes is what proves the queue
+      # supervisor Puma forks is actually alive rather than merely started.
+      - name: The Solid schemas were created and the queue supervisor is running
+        run: |
+          set -euo pipefail
+          tables=$(docker exec rfci-db psql -U postgres -d app_production -tAc \
+            "select count(*) from information_schema.tables where table_schema='public' and table_name like 'solid_%'" | tr -d '[:space:]')
+          procs=$(docker exec rfci-db psql -U postgres -d app_production -tAc \
+            "select count(*) from solid_queue_processes" | tr -d '[:space:]')
+          echo "solid tables=$tables  solid_queue_processes=$procs"
+          [ "$tables" -ge 15 ] || { echo "FAIL: expected at least 15 solid_* tables"; docker logs rfci-app; exit 1; }
+          [ "$procs" -gt 0 ] || { echo "FAIL: no Solid Queue process registered"; docker logs rfci-app; exit 1; }
+
+      - name: Container logs
+        if: always()
+        run: docker logs rfci-app 2>&1 | tail -40
