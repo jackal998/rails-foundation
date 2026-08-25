@@ -333,14 +333,35 @@ jobs:
         run: |
           set -euo pipefail
           docker network create rfci
+
+          # POSTGRES_DB creates the database during initdb, so there is no
+          # CREATE DATABASE step to race against. The first version ran one,
+          # and CI failed on its very first execution with "terminating
+          # connection due to administrator command": the official image starts
+          # a TEMPORARY server to run initialisation, and pg_isready answers
+          # for it, so the create landed on a server that was about to be shut
+          # down and restarted. Locally the image was already pulled and the
+          # timing never exposed it -- a rehearsal is only ever evidence about
+          # the environment it ran in.
           docker run -d --name rfci-db --network rfci \
             -e POSTGRES_USER=postgres -e POSTGRES_HOST_AUTH_METHOD=trust \
+            -e POSTGRES_DB=app_production \
             postgres:17-alpine
-          for _ in $(seq 1 60); do
-            docker exec rfci-db pg_isready -U postgres >/dev/null 2>&1 && break
+
+          # A real query against the real database, not pg_isready, and it has
+          # to succeed twice in a row: the temporary server can satisfy a
+          # single probe.
+          ok=0
+          for _ in $(seq 1 90); do
+            if docker exec rfci-db psql -U postgres -d app_production -tAc 'select 1' >/dev/null 2>&1; then
+              ok=$((ok + 1))
+              [ "$ok" -ge 2 ] && break
+            else
+              ok=0
+            fi
             sleep 1
           done
-          docker exec rfci-db psql -U postgres -c "create database app_production"
+          [ "$ok" -ge 2 ] || { echo "FAIL: Postgres never became reliably reachable"; docker logs rfci-db; exit 1; }
 
           URL="postgres://postgres@rfci-db:5432/app_production"
 
