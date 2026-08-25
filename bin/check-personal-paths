@@ -45,7 +45,8 @@ export LC_ALL="${LC_ALL:-C.UTF-8}"
 # repository on a comment that names nobody.
 PATTERN='([A-Za-z]:[\/]+Users|/Users|/home)[\/]+[[:alnum:]][[:alnum:]._-]{0,31}'
 
-# NOTHING is exempt, including this file. That is deliberate and it took two
+# No FILE is exempt, including this file (binary content is a separate
+# limitation, noted at the scan below). That is deliberate and it took two
 # tries to earn: the first version held its fixtures as literals, which made
 # the checker fail on itself, which needed an exemption, which then needed a
 # second one for bin/check-gitleaks-rules, and an exemption list is a hole
@@ -55,7 +56,6 @@ PATTERN='([A-Za-z]:[\/]+Users|/Users|/home)[\/]+[[:alnum:]][[:alnum:]._-]{0,31}'
 
 errors="$(mktemp)"
 matches="$(mktemp)"
-trap 'rm -f "$errors" "$matches"' EXIT
 
 # Every case this pattern is supposed to decide, in both directions. A guard
 # that has stopped matching and a guard with nothing to report are the same
@@ -124,9 +124,28 @@ self_test || exit 2
 # batch found nothing -- which is the normal case. So the outcome is read from
 # the output rather than the code: anything on stderr means the search did not
 # happen properly and no clean result may be reported from it.
+files="$(mktemp)"
+trap 'rm -f "$errors" "$matches" "$files"' EXIT
+
+# git's exit status is checked before its output is used. Without this, a
+# repository git cannot read produces no filenames, grep is handed nothing,
+# both output files stay empty, and the script reports a clean tree it never
+# looked at.
+if ! git ls-files -z > "$files" 2>"$errors"; then
+  echo "check-personal-paths could not list tracked files:" >&2
+  cat "$errors" >&2
+  exit 2
+fi
+if [ ! -s "$files" ]; then
+  echo "check-personal-paths found no tracked files at all -- refusing to call that clean" >&2
+  exit 2
+fi
+
+# -I skips files grep considers binary, so a path embedded in image or PDF
+# metadata is not inspected. Stated rather than hidden: dropping -I would flood
+# the output with binary noise and get this check ignored, which protects less.
 set +e
-git ls-files -z \
-  | xargs -0 grep -nIE "$PATTERN" > "$matches" 2> "$errors"
+xargs -0 grep -nIE "$PATTERN" < "$files" > "$matches" 2> "$errors"
 set -e
 
 if [ -s "$errors" ]; then

@@ -425,6 +425,14 @@ rather than during an incident.
   same page served locally. So the number exists and the judgement does
   not: nobody has yet said what this application can live with. That is
   the owner's call and it has not been made.
+
+  Two limits on that measurement, because this trigger asks for something
+  slightly different from what was taken. It is **p90, not p95** — thirty
+  samples cannot produce a meaningful p95 — and the raw samples were not
+  kept, so it cannot be recomputed from what is recorded. It is also one
+  client, one network, one time of day. It settles "hundreds of
+  milliseconds rather than tens", which is enough to reason with and not
+  enough to decide an irreversible region change on.
 - Free container too small under a real soak test → step up one compute
   plan; do not retreat to SQLite.
 - More than ~3 app instances → add a connection pooler **before** scaling

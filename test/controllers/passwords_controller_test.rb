@@ -80,6 +80,25 @@ class PasswordsControllerTest < ActionDispatch::IntegrationTest
     assert_notice "can.t be blank"
   end
 
+  # The first fix checked params[:password], which an Array satisfies: it is
+  # not blank, so it passed the guard, and then permit discarded it for not
+  # being a scalar -- leaving update({}) to succeed exactly as before. Found by
+  # an external review of the fix, not by the tests written alongside it.
+  test "update with an array-shaped password changes nothing and says so" do
+    token = @user.password_reset_token
+    session = @user.sessions.create!(user_agent: "test", ip_address: "127.0.0.1")
+
+    assert_no_changes -> { @user.reload.password_digest } do
+      put password_path(token), params: { password: [ "x" ], password_confirmation: [ "x" ] }
+      assert_redirected_to edit_password_path(token)
+    end
+
+    assert Session.exists?(session.id), "the reset failed, so the sessions must survive it"
+
+    follow_redirect!
+    assert_notice "can.t be blank"
+  end
+
   # bcrypt refuses anything over 72 bytes, which forty accented characters
   # reach. Reporting that as "Passwords did not match" sends the user round the
   # same loop forever, retyping two values that match perfectly.
