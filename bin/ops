@@ -181,12 +181,32 @@ compare_against_live() {
     # What is not ambiguous is a table that holds rows in production and none
     # at all in the dump. That is the hollowed-out backup this whole comparison
     # exists to catch, and no amount of ordinary churn produces it.
-    if [ "$dumped" -eq 0 ] && [ "$live" -gt 0 ]; then
-      echo "  EMPTY IN DUMP: $table has $live rows live but none in the dump" >&2
-      bad=$((bad + 1))
-    elif [ "$dumped" != "$live" ]; then
-      echo "  (drift: $table $dumped in dump, $live now live -- expected on a running system)"
-    fi
+    # Which tables are allowed to differ is not a matter of taste. Solid Queue
+    # and Solid Cache rewrite themselves continuously -- recurring tasks alone
+    # move solid_queue_jobs every minute -- so requiring equality there would
+    # fail this command at random on good backups. Nothing else in this schema
+    # churns in the seconds between the dump and this query, so for those
+    # tables a dump holding FEWER rows than production is not drift, it is
+    # missing data. Tolerating any shortfall let a dump keeping 1 of 100 users
+    # pass as "drift", which is the failure this whole comparison exists for.
+    case "$table" in
+      solid_*)
+        if [ "$dumped" -eq 0 ] && [ "$live" -gt 0 ]; then
+          echo "  EMPTY IN DUMP: $table has $live rows live but none in the dump" >&2
+          bad=$((bad + 1))
+        elif [ "$dumped" != "$live" ]; then
+          echo "  (churn: $table $dumped in dump, $live now live -- expected of a running queue)"
+        fi
+        ;;
+      *)
+        if [ "$dumped" -lt "$live" ]; then
+          echo "  SHORT IN DUMP: $table has $live rows live but only $dumped in the dump" >&2
+          bad=$((bad + 1))
+        elif [ "$dumped" != "$live" ]; then
+          echo "  (grew since the dump: $table $dumped in dump, $live now live)"
+        fi
+        ;;
+    esac
   done <<< "$live_counts"
 
   [ "$bad" -eq 0 ] || { echo "FAIL: the dump does not match the live database" >&2; return 1; }
@@ -254,19 +274,31 @@ cmd_restore_drill() {
   # function-local would be out of scope -- and under `set -u` that made the
   # trap itself die, so the drill printed PASSED while leaving its container
   # running. Found by running it, not by reading it.
-  DRILL_BOX="ops-restore-drill-$$"
   DRILL_TMP="$(mktemp -d)"
   local pw="drill-$$"
+  local box="ops-restore-drill-$$"
+
+  # Refuse a name that is already taken rather than adopting it. PIDs are
+  # reused, and the cleanup below is a force-remove with -v: arming it before
+  # knowing this invocation created the container would let a drill destroy
+  # somebody else's container and its volume on a name collision.
+  if docker inspect "$box" >/dev/null 2>&1; then
+    echo "FAIL: a container named $box already exists -- refusing to touch it" >&2
+    exit 1
+  fi
 
   # -v is load-bearing. postgres:17-alpine declares VOLUME on its data
   # directory, so every run without -v left an anonymous volume holding a full
   # copy of the restored database on this machine -- eleven of them, about
   # 500 MB, before anyone looked. The failure is reported rather than swallowed:
   # a cleanup that quietly does not happen is how they accumulated.
-  trap 'rm -rf "${DRILL_TMP:-}"; docker rm -f -v "${DRILL_BOX:-}" >/dev/null 2>&1 || echo "WARNING: could not remove container ${DRILL_BOX:-} -- remove it and its volume by hand" >&2' EXIT
-
   echo "==> booting a throwaway Postgres (nothing of yours is touched)"
-  docker run -d --name "$DRILL_BOX" -e POSTGRES_PASSWORD="$pw" postgres:17-alpine >/dev/null
+  docker run -d --name "$box" -e POSTGRES_PASSWORD="$pw" postgres:17-alpine >/dev/null
+
+  # Only now, when this invocation owns the container, does the destructive
+  # cleanup get armed.
+  DRILL_BOX="$box"
+  trap 'rm -rf "${DRILL_TMP:-}"; [ -n "${DRILL_BOX:-}" ] && { docker rm -f -v "$DRILL_BOX" >/dev/null 2>&1 || echo "WARNING: could not remove container $DRILL_BOX -- remove it and its volume by hand" >&2; }' EXIT
   local ready=0
   for _ in $(seq 1 60); do
     if docker exec "$DRILL_BOX" pg_isready -U postgres >/dev/null 2>&1; then ready=1; break; fi

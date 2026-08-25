@@ -24,11 +24,19 @@ class PasswordsController < ApplicationController
     # successful reset while the old password still worked. Someone rotating a
     # password they believe is compromised would walk away with the compromised
     # one, told it was replaced.
-    if params[:password].blank?
+    # The blank check runs on the PERMITTED attributes, not on params directly.
+    # Checking params[:password] left the same hole open by another door:
+    # `password[]=x` is an Array, which is not blank, so it passed the guard --
+    # and then `permit(:password)` discarded it for not being a scalar, leaving
+    # update({}) to succeed exactly as before. The fix that only looked at the
+    # raw parameter fixed the report of the bug rather than the bug.
+    attributes = params.permit(:password, :password_confirmation)
+
+    if attributes[:password].blank?
       return redirect_to edit_password_path(params[:token]), alert: "Password can't be blank."
     end
 
-    if @user.update(params.permit(:password, :password_confirmation))
+    if @user.update(attributes)
       @user.sessions.destroy_all
       redirect_to new_session_path, notice: "Password has been reset."
     else

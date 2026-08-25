@@ -34,6 +34,20 @@ if [ -z "$missing" ]; then
 fi
 
 for name in $missing; do
+  # Every token is validated before it can name a destructive task. `rails
+  # runner` prints whatever the boot process writes to stdout, so an
+  # initializer with a stray `puts` could put an arbitrary word -- or, worse,
+  # the word "queue" -- into this loop and get a live schema dropped. Only
+  # these three names may ever reach db:schema:load.
+  case "$name" in
+    cache|queue|cable) ;;
+    *)
+      echo "refusing to act on unexpected output from the check: '${name}'" >&2
+      echo "something on the boot path is writing to stdout; fix that first." >&2
+      exit 1
+      ;;
+  esac
+
   echo "==> solid databases: ${name} has no tables, loading db/${name}_schema.rb"
   DISABLE_DATABASE_ENVIRONMENT_CHECK=1 ./bin/rails "db:schema:load:${name}"
 done

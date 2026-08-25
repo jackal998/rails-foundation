@@ -39,25 +39,45 @@ trap 'rm -rf "$WORK" "$REPORT"' EXIT
 pass=0
 fail=0
 
-# check <expect CATCH|CLEAN> <relative filename> <content>
+# check <expect CATCH|CLEAN> <rule-id-or-dash> <relative filename> <content>
+#
+# A CATCH case names the rule that must fire, and the exit code alone is not
+# accepted as proof. gitleaks' stock ruleset overlaps ours: when the custom
+# secret-key-base rule was deliberately disabled, its 64-hex fixture was still
+# reported -- by the stock generic-api-key rule -- so the run stayed non-zero
+# and only the second fixture revealed the rule was dead. With one fixture
+# instead of two, a custom rule could be deleted outright and this checker
+# would have gone on printing green. Asserting the RuleID closes that.
 check() {
-  local expect="$1" name="$2" content="$3"
+  local expect="$1" rule="$2" name="$3" content="$4"
   rm -rf "${WORK:?}/case"
   mkdir -p "$WORK/case/$(dirname "$name")"
   printf '%s\n' "$content" > "$WORK/case/$name"
 
-  "$GITLEAKS" dir --config "$CONFIG" --redact "$WORK/case" > "$REPORT/out.txt" 2>&1
+  "$GITLEAKS" dir --config "$CONFIG" --redact --verbose "$WORK/case" > "$REPORT/out.txt" 2>&1
   local rc=$? got=CLEAN
   [ "$rc" -ne 0 ] && got=CATCH
 
-  if [ "$got" = "$expect" ]; then
-    printf '  ok    %-50s %s\n' "$name: $expect" "$got"
-    pass=$((pass + 1))
-  else
-    printf '  FAIL  %-50s expected %s, got %s\n' "$name" "$expect" "$got"
+  local label="$name: $expect${rule:+ ($rule)}"
+
+  if [ "$got" != "$expect" ]; then
+    printf '  FAIL  %-52s expected %s, got %s\n' "$label" "$expect" "$got"
     sed -n '1,12p' "$REPORT/out.txt" >&2
     fail=$((fail + 1))
+    return
   fi
+
+  if [ "$expect" = "CATCH" ] && [ "$rule" != "-" ]; then
+    if ! grep -qE "^RuleID:[[:space:]]+${rule}\$" "$REPORT/out.txt"; then
+      printf '  FAIL  %-52s caught, but NOT by %s\n' "$label" "$rule"
+      grep -E '^RuleID:' "$REPORT/out.txt" | sort -u | sed 's/^/        fired instead: /' >&2
+      fail=$((fail + 1))
+      return
+    fi
+  fi
+
+  printf '  ok    %-52s %s\n' "$label" "$got"
+  pass=$((pass + 1))
 }
 
 # Every must-catch fixture is ASSEMBLED HERE, never written out as a literal.
@@ -83,44 +103,44 @@ ID_LETTER="A"
 SCHEME="postgres"
 
 echo "rails-key-file-staged"
-check CATCH config/master.key "$HEX32"
-check CLEAN config/settings.yml "greeting: hello"
+check CATCH rails-key-file-staged config/master.key "$HEX32"
+check CLEAN - config/settings.yml "greeting: hello"
 
 echo "rails-master-key-literal"
-check CATCH deploy.sh "RAILS_MASTER_KEY=$HEX32"
-check CLEAN deploy.sh 'RAILS_MASTER_KEY=${RAILS_MASTER_KEY:?set me}'
+check CATCH rails-master-key-literal deploy.sh "RAILS_MASTER_KEY=$HEX32"
+check CLEAN - deploy.sh 'RAILS_MASTER_KEY=${RAILS_MASTER_KEY:?set me}'
 
 echo "rails-secret-key-base-literal"
-check CATCH app.env "SECRET_KEY_BASE=$HEX64"
+check CATCH rails-secret-key-base-literal app.env "SECRET_KEY_BASE=$HEX64"
 # Not hex. secret_key_base is a string, and a rule that only knew [a-f0-9]
 # would publish this one while reporting the repository clean.
-check CATCH app.env "SECRET_KEY_BASE=$ALPHA64"
-check CLEAN app.rb 'config.secret_key_base = ENV.fetch("SECRET_KEY_BASE")'
-check CLEAN run.sh 'SECRET_KEY_BASE=${SECRET_KEY_BASE:?set me}'
+check CATCH rails-secret-key-base-literal app.env "SECRET_KEY_BASE=$ALPHA64"
+check CLEAN - app.rb 'config.secret_key_base = ENV.fetch("SECRET_KEY_BASE")'
+check CLEAN - run.sh 'SECRET_KEY_BASE=${SECRET_KEY_BASE:?set me}'
 
 echo "home-path-real-username"
-check CATCH README.md "see C:\\Users\\$USER_NAME\\repo"
-check CATCH README.md "see C:/Users/$USER_NAME/repo"
+check CATCH home-path-real-username README.md "see C:\\Users\\$USER_NAME\\repo"
+check CATCH home-path-real-username README.md "see C:/Users/$USER_NAME/repo"
 # Non-ASCII names are people too. An ASCII-only class was silent on exactly
 # the accounts whose names are not written in Latin letters, and this case is
 # also what proves LC_ALL took effect.
-check CATCH README.md "see C:/Users/$HAN_NAME/repo"
-check CLEAN README.md 'see C:\Users\<you>\repo'
-check CLEAN README.md 'it lives in /home/$USER/src'
-check CLEAN README.md 'it lives in %USERPROFILE%\repo'
+check CATCH home-path-real-username README.md "see C:/Users/$HAN_NAME/repo"
+check CLEAN - README.md 'see C:\Users\<you>\repo'
+check CLEAN - README.md 'it lives in /home/$USER/src'
+check CLEAN - README.md 'it lives in %USERPROFILE%\repo'
 # An elision names nobody. Treating "..." as a username put a permanent false
 # finding in merged history, which no ignore-file entry could ever retire.
-check CLEAN README.md 'the path C:/Users/.../Temp/x.sql'
+check CLEAN - README.md 'the path C:/Users/.../Temp/x.sql'
 
 echo "postgres-url-with-password"
 # The scheme is assembled too. Leaving it literal still formed a complete
 # connection-URL shape around the variable, and the rule matched the file.
-check CATCH compose.yaml "DATABASE_URL: ${SCHEME}://app:${PW}@db:5432/app"
-check CLEAN compose.yaml 'DATABASE_URL: postgres://db:5432/app'
+check CATCH postgres-url-with-password compose.yaml "DATABASE_URL: ${SCHEME}://app:${PW}@db:5432/app"
+check CLEAN - compose.yaml 'DATABASE_URL: postgres://db:5432/app'
 
 echo "tw-national-id"
-check CATCH notes.md "the number ${ID_LETTER}123456789 belongs to someone"
-check CLEAN notes.md "order ${ID_LETTER}12345 shipped"
+check CATCH tw-national-id notes.md "the number ${ID_LETTER}123456789 belongs to someone"
+check CLEAN - notes.md "order ${ID_LETTER}12345 shipped"
 
 echo
 echo "passed $pass, failed $fail"

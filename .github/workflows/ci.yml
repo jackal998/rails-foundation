@@ -119,8 +119,14 @@ jobs:
       # --redact is not optional in a public repository. Without it a detected
       # secret is printed verbatim into a world-readable build log, so the
       # scan that found the leak publishes it a second time.
-      - name: Scan every commit for secrets
-        run: ./gitleaks git --config .gitleaks.toml --redact --verbose .
+      # --diff-merges is load-bearing. `gitleaks git` shells out to git log,
+      # which shows no diff for a merge commit by default: on this repository
+      # that scanned 26 of the 40 reachable commits while the step was called
+      # "scan every commit". A secret introduced while resolving a merge
+      # conflict exists ONLY in the merge result, which is precisely the set
+      # that was being skipped.
+      - name: Scan every commit for secrets, merges included
+        run: ./gitleaks git --config .gitleaks.toml --redact --verbose --log-opts="--diff-merges=first-parent" .
 
       # Separate from gitleaks on purpose: its default ruleset allowlists Unix
       # home-directory findings, so the home-path rule in .gitleaks.toml cannot
@@ -348,20 +354,26 @@ jobs:
             -e POSTGRES_DB=app_production \
             postgres:17-alpine
 
-          # A real query against the real database, not pg_isready, and it has
-          # to succeed twice in a row: the temporary server can satisfy a
-          # single probe.
-          ok=0
+          # Probed over TCP, from another container on the same network.
+          #
+          # This is what actually distinguishes the two servers. The official
+          # entrypoint runs its initialisation phase with listen_addresses
+          # empty, so the temporary server is reachable over the unix socket
+          # and NOT over TCP -- which means `docker exec ... psql` (a socket
+          # connection) answers for it, and the first fix here, two consecutive
+          # socket queries, could still have been answered twice by a server on
+          # its way out. Nothing reaches port 5432 until the real server is up.
           for _ in $(seq 1 90); do
-            if docker exec rfci-db psql -U postgres -d app_production -tAc 'select 1' >/dev/null 2>&1; then
-              ok=$((ok + 1))
-              [ "$ok" -ge 2 ] && break
-            else
-              ok=0
+            if docker run --rm --network rfci postgres:17-alpine \
+                 psql "postgres://postgres@rfci-db:5432/app_production" -tAc 'select 1' >/dev/null 2>&1; then
+              echo "Postgres accepting TCP connections"
+              break
             fi
             sleep 1
           done
-          [ "$ok" -ge 2 ] || { echo "FAIL: Postgres never became reliably reachable"; docker logs rfci-db; exit 1; }
+          docker run --rm --network rfci postgres:17-alpine \
+            psql "postgres://postgres@rfci-db:5432/app_production" -tAc 'select 1' >/dev/null \
+            || { echo "FAIL: Postgres never accepted a TCP connection"; docker logs rfci-db; exit 1; }
 
           URL="postgres://postgres@rfci-db:5432/app_production"
 
@@ -389,14 +401,16 @@ jobs:
           docker logs rfci-app
           exit 1
 
-      # The failure this exists for answered one request and died a minute
-      # later, so answering once proves nothing. Forty-five seconds, and the
-      # restart count has to be zero: a container that died and came back is
-      # not a container that stayed up.
-      - name: It is still alive 45 seconds later
+      # The failure this exists for answered one request and died A MINUTE
+      # later, so answering once proves nothing -- and neither does forty-five
+      # seconds, which is where this window sat until someone noticed it ended
+      # before the event it claimed to cover. Ninety seconds clears the
+      # observed failure with room, and the restart count has to be zero: a
+      # container that died and came back is not a container that stayed up.
+      - name: It is still alive 90 seconds later
         run: |
           set -euo pipefail
-          sleep 45
+          sleep 90
           status=$(docker inspect -f '{{.State.Status}}' rfci-app)
           restarts=$(docker inspect -f '{{.RestartCount}}' rfci-app)
           code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 http://127.0.0.1:3010/up || true)
@@ -417,11 +431,21 @@ jobs:
           set -euo pipefail
           tables=$(docker exec rfci-db psql -U postgres -d app_production -tAc \
             "select count(*) from information_schema.tables where table_schema='public' and table_name like 'solid_%'" | tr -d '[:space:]')
-          procs=$(docker exec rfci-db psql -U postgres -d app_production -tAc \
-            "select count(*) from solid_queue_processes" | tr -d '[:space:]')
-          echo "solid tables=$tables  solid_queue_processes=$procs"
+          # By KIND, not by count. "More than zero processes" is satisfied by a
+          # single stale Supervisor row left behind by a run that has since
+          # died, which would report a healthy queue while nothing can execute
+          # a job. Solid Queue registers a Dispatcher, a Scheduler, a
+          # Supervisor and at least one Worker; all four must be present.
+          kinds=$(docker exec rfci-db psql -U postgres -d app_production -tAc \
+            "select string_agg(distinct kind, ',' order by kind) from solid_queue_processes")
+          echo "solid tables=$tables  process kinds=$kinds"
           [ "$tables" -ge 15 ] || { echo "FAIL: expected at least 15 solid_* tables"; docker logs rfci-app; exit 1; }
-          [ "$procs" -gt 0 ] || { echo "FAIL: no Solid Queue process registered"; docker logs rfci-app; exit 1; }
+          for kind in Dispatcher Scheduler Supervisor Worker; do
+            case "$kinds" in
+              *"$kind"*) ;;
+              *) echo "FAIL: no $kind registered in solid_queue_processes"; docker logs rfci-app; exit 1 ;;
+            esac
+          done
 
       - name: Container logs
         if: always()

@@ -63,12 +63,19 @@ Rails.application.configure do
   config.solid_queue.connects_to = { database: { writing: :queue } }
 
   # This application can send exactly one kind of mail -- a password reset --
-  # and until a domain and a mail provider exist it cannot deliver it. The
-  # three settings below are arranged so that this is LOUD rather than silent,
-  # because the generated defaults made it silent in three separate ways at
-  # once: links were built for example.com, delivery went to localhost:25
-  # where nothing listens, and delivery errors were swallowed. A user would
-  # have been told to check their inbox and nothing would ever arrive.
+  # and until a domain and a mail provider exist it cannot deliver it. What was
+  # actually wrong with the generated defaults was TWO things, not three: links
+  # were built for example.com, and delivery went to localhost:25 where nothing
+  # listens. A user would have been told to check their inbox and nothing would
+  # ever arrive.
+  #
+  # The commit that changed this claimed a third fault -- that delivery errors
+  # were swallowed -- and that was wrong. Action Mailer defaults
+  # raise_delivery_errors to TRUE, and the generated line setting it to false
+  # was commented out, so failures were already raising. The line below is
+  # therefore explicit rather than corrective, and saying so here matters more
+  # than the line does: an audit of this repository's own claims caught it, in
+  # the commit whose subject was about statements not surviving being checked.
   #
   # Reset mail is sent with deliver_later, so a raised error fails that job and
   # is recorded in solid_queue_failed_executions. The web request is unaffected.
