@@ -1,0 +1,148 @@
+#!/bin/bash
+# Fail if any tracked file contains an absolute home directory with a real
+# username in it. This repository is public and every commit is permanent.
+#
+# WHY THIS EXISTS RATHER THAN A GITLEAKS RULE. .gitleaks.toml has a
+# home-path-real-username rule, and it cannot work for Unix paths, because
+# gitleaks' default ruleset -- which this project keeps, for its vendor token
+# patterns -- carries a global allowlist containing:
+#
+#     ^/(?:bin|etc|home|opt|tmp|usr|var)/[\w ./-]+$
+#     ^/Users/(?i)[a-z0-9]+/[\w .-/]+$
+#
+# Those suppress the finding after the rule has already matched it. Verified by
+# running the rule alone, where an ordinary Unix home path is caught, and with
+# useDefault = true, where it is not. For gitleaks that allowlist is right:
+# build paths are noise. For a public repository trying not to publish whose
+# laptop this is, it is exactly backwards, and no regex written inside
+# .gitleaks.toml can undo it. So this check does not go through gitleaks.
+#
+# Placeholders are the documented convention and must keep working:
+#   C:\Users\<you>   /home/$USER   %USERPROFILE%   <USER_HOME>
+# They are excluded by construction, not by exception: <, $ and % are not in
+# the username character class, so the pattern cannot reach past them.
+#
+# POSIX classes, not \p{L}: this machine's grep refuses -P outside a UTF-8
+# locale, and the first version of this file hid that behind 2>/dev/null. It
+# reported "no personal home paths" while matching nothing at all -- a guard
+# whose broken state and whose healthy state printed the same sentence. Every
+# error path below is therefore loud, and grep's exit codes are read as three
+# outcomes rather than two.
+
+set -euo pipefail
+
+cd "$(dirname "$0")/.."
+
+# [[:alnum:]] is ASCII-only in the C locale, and a Windows profile directory is
+# whatever its owner is called. Without this the check was quietest about
+# exactly the people whose names are not ASCII: C:/Users/<a Chinese name>/repo
+# produced no match at all. The self-test below fails closed if the locale
+# stops taking effect, so this line cannot silently become decoration.
+export LC_ALL="${LC_ALL:-C.UTF-8}"
+
+# The username must START with an alphanumeric. Without that, an elision like
+# C:/Users/.../Temp read as a username of "..." and this check failed its own
+# repository on a comment that names nobody.
+PATTERN='([A-Za-z]:[\/]+Users|/Users|/home)[\/]+[[:alnum:]][[:alnum:]._-]{0,31}'
+
+# NOTHING is exempt, including this file. That is deliberate and it took two
+# tries to earn: the first version held its fixtures as literals, which made
+# the checker fail on itself, which needed an exemption, which then needed a
+# second one for bin/check-gitleaks-rules, and an exemption list is a hole
+# somebody has to remember forever. Assembling the fixtures at runtime instead
+# left nothing to exempt -- so this check reads every tracked file there is,
+# and if a real path is ever pasted into this script it will say so.
+
+errors="$(mktemp)"
+matches="$(mktemp)"
+trap 'rm -f "$errors" "$matches"' EXIT
+
+# Every case this pattern is supposed to decide, in both directions. A guard
+# that has stopped matching and a guard with nothing to report are the same
+# silence, and this one has already been both: an earlier version used grep -P,
+# which this machine's locale refuses, and it reported the tree clean while
+# matching nothing whatsoever.
+#
+# The must-pass half is not a formality either. It is what stops the next
+# person from "tightening" the pattern until it rejects the placeholder
+# convention the whole repository is written in.
+self_test() {
+  local failed=0
+
+  must_catch() {
+    printf '%s\n' "$1" | grep -qE "$PATTERN" \
+      || { echo "  FAIL (should catch): $1" >&2; failed=1; }
+  }
+  must_pass() {
+    printf '%s\n' "$1" | grep -qE "$PATTERN" \
+      && { echo "  FAIL (should allow): $1" >&2; failed=1; } || true
+  }
+
+  # The must-catch fixtures are ASSEMBLED, never written out whole. This file
+  # is tracked in a public repository, and a convincing fake home path sitting
+  # in it is the same thing it exists to prevent -- it also made gitleaks flag
+  # this file, which then needed an allowlist entry, which is a hole to
+  # maintain forever. Built at runtime there is nothing to exempt.
+  local u="jsmith"
+  local han
+  han="$(printf '\xe5\xb0\x8f\xe6\x98\x8e')"   # a two-character Han name
+
+  must_catch "/home/${u}/src"
+  must_catch "/Users/${u}/src"
+  must_catch "see C:\\Users\\${u}\\repo"
+  must_catch "see C:/Users/${u}/repo"
+  must_catch "cd /home/${u}/app"
+  # Non-ASCII, and therefore also a check that LC_ALL took effect: outside a
+  # UTF-8 locale [[:alnum:]] is ASCII-only and this stops matching.
+  must_catch "see C:/Users/${han}/repo"
+
+  must_pass 'see C:\Users\<you>\repo'
+  must_pass 'it lives in /home/$USER/src'
+  must_pass 'it lives in %USERPROFILE%\repo'
+  must_pass 'it lives in <USER_HOME>/repo'
+  must_pass 'it lives in /var/lib/postgresql/data'
+  must_pass 'nothing personal here at all'
+  # An elision names nobody. Treating "..." as a username failed this check on
+  # its own repository.
+  must_pass 'the path C:/Users/.../Temp/x.sql'
+
+  if [ "$failed" -ne 0 ]; then
+    echo "check-personal-paths self-test FAILED (LC_ALL is '$LC_ALL')" >&2
+    return 1
+  fi
+  return 0
+}
+
+if [ "${1:-}" = "--self-test" ]; then
+  self_test && echo "check-personal-paths self-test passed"
+  exit $?
+fi
+
+self_test || exit 2
+
+# xargs, not grep, decides this exit status, and it returns 123 whenever ANY
+# batch found nothing -- which is the normal case. So the outcome is read from
+# the output rather than the code: anything on stderr means the search did not
+# happen properly and no clean result may be reported from it.
+set +e
+git ls-files -z \
+  | xargs -0 grep -nIE "$PATTERN" > "$matches" 2> "$errors"
+set -e
+
+if [ -s "$errors" ]; then
+  echo "check-personal-paths could not complete the search:" >&2
+  cat "$errors" >&2
+  exit 2
+fi
+
+if [ -s "$matches" ]; then
+  echo "Absolute home paths with a real username are in tracked files:" >&2
+  echo >&2
+  cat "$matches" >&2
+  echo >&2
+  echo "This repository is public and a force-push does not un-publish anything." >&2
+  echo "Replace the username with a placeholder: <you>, \$USER, %USERPROFILE%." >&2
+  exit 1
+fi
+
+echo "no personal home paths in $(git ls-files | wc -l) tracked files"

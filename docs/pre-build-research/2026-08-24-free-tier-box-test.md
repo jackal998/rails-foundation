@@ -25,9 +25,15 @@ docker run --cpus=0.2 --memory=512m …   # postgres:17-alpine
 ```
 
 The Rails image is the production stage of this repo's committed
-Dockerfile — the same artifact CI builds — running `RAILS_ENV=production`
-with `SOLID_QUEUE_IN_PUMA=true`, behind Thruster, with the entrypoint
+Dockerfile, built locally, running `RAILS_ENV=production` with
+`SOLID_QUEUE_IN_PUMA=true`, behind Thruster, with the entrypoint
 performing its own `db:prepare`.
+
+(This said "the same artifact CI builds". On the day it was written CI
+built no image at all — every job ran on the runner with
+`ruby/setup-ruby`. A `production-image` job was added 2026-08-25 and does
+build it; the sentence was corrected rather than quietly made true,
+because the measurements below were taken before that job existed.)
 
 **Honest limit, stated up front:** `docker --cpus=0.2` is a hard CFS
 quota. Northflank says *shared* vCPU, which may permit bursting above the

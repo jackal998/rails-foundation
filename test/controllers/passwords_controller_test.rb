@@ -57,7 +57,43 @@ class PasswordsControllerTest < ActionDispatch::IntegrationTest
     end
 
     follow_redirect!
-    assert_notice "Passwords did not match"
+    assert_notice "doesn.t match"
+  end
+
+  # params.permit returns an empty hash when the form arrives with no password
+  # in it, and update({}) succeeds against an otherwise valid record. The
+  # generated controller therefore destroyed every session and announced a
+  # successful reset while the old password still worked -- the worst possible
+  # outcome for someone rotating a password they believe is compromised.
+  test "update with a blank password changes nothing and says so" do
+    token = @user.password_reset_token
+    session = @user.sessions.create!(user_agent: "test", ip_address: "127.0.0.1")
+
+    assert_no_changes -> { @user.reload.password_digest } do
+      put password_path(token)
+      assert_redirected_to edit_password_path(token)
+    end
+
+    assert Session.exists?(session.id), "the reset failed, so the sessions must survive it"
+
+    follow_redirect!
+    assert_notice "can.t be blank"
+  end
+
+  # bcrypt refuses anything over 72 bytes, which forty accented characters
+  # reach. Reporting that as "Passwords did not match" sends the user round the
+  # same loop forever, retyping two values that match perfectly.
+  test "update with an over-long password explains the real reason" do
+    token = @user.password_reset_token
+    too_long = "é" * 40
+
+    assert_no_changes -> { @user.reload.password_digest } do
+      put password_path(token), params: { password: too_long, password_confirmation: too_long }
+      assert_redirected_to edit_password_path(token)
+    end
+
+    follow_redirect!
+    assert_notice "too long"
   end
 
   private

@@ -36,7 +36,13 @@ regex = '''(?i)rails[_-]?master[_-]?key\s*[:=]\s*['"]?[a-f0-9]{32}\b'''
 [[rules]]
 id = "rails-secret-key-base-literal"
 description = "SECRET_KEY_BASE assigned a literal value"
-regex = '''(?i)secret[_-]?key[_-]?base\s*[:=]\s*['"]?[a-f0-9]{64,}\b'''
+# The character class is deliberately wider than hex. `rails secret` emits
+# hex, but secret_key_base is just a string: any sufficiently long value
+# works, and a rule that only recognised [a-f0-9] would have published a
+# perfectly valid non-hex one while reporting no leak. Placeholder and
+# indirection forms stay excluded because <, $, %, ( and . are not in the
+# class, so `= ENV.fetch(...)`, `= ${VAR}` and `= <%= ... %>` cannot match.
+regex = '''(?i)secret[_-]?key[_-]?base\s*[:=]\s*['"]?[A-Za-z0-9+/=_-]{32,}'''
 
 # --- PII (ported from the mini-projects nursery) ------------------------------
 # Placeholder convention these enforce: usernames in documented paths are
@@ -48,7 +54,26 @@ id = "home-path-real-username"
 description = "Absolute home path with a concrete username (PII — use <you> placeholders)"
 # The username char class excludes <, $, %, so placeholder forms
 # (C:\Users\<you>, /home/$USER, %USERPROFILE%) never match.
-regex = '''(?:[A-Za-z]:[\\/]+Users|/Users|/home)[\\/]+[A-Za-z0-9._-]{1,32}\b'''
+#
+# \p{L} rather than A-Za-z: a Windows profile directory is whatever the person
+# is called, and on this machine that can be Chinese. An ASCII-only class saw
+# no match at all in a Users path whose name is written in Han characters, so
+# the rule was quietest about exactly the people whose names are not ASCII.
+#
+# Unix paths are a different matter and this rule cannot cover them: gitleaks'
+# default allowlist discards /home/... and /Users/... findings after the rule
+# has matched. bin/check-personal-paths is what covers those, outside gitleaks.
+#
+# The example that used to sit in this comment is gone on purpose -- it was a
+# real-looking home path in a tracked file, and bin/check-personal-paths
+# correctly refused it.
+# The username must START with a letter or digit. Without that, an elided path
+# like C:/Users/.../Temp read as a username of "...", and a comment naming
+# nobody was reported as a leak -- permanently, since it is in merged history
+# and history does not change. Tightening the rule fixes the class; a
+# .gitleaksignore fingerprint would have suppressed one instance and left the
+# next one to be argued about again.
+regex = '''(?:[A-Za-z]:[\\/]+Users|/Users|/home)[\\/]+[\p{L}\p{N}][\p{L}\p{N}._-]{0,31}'''
 
 [[rules]]
 id = "tw-national-id"

@@ -12,10 +12,15 @@ name: rails-foundation
 services:
   db:
     # Pinned deliberately. Northflank's managed Postgres offers 12-18, so 17 is
-    # inside what the platform can serve. This pin MUST match whatever the
-    # managed addon is actually provisioned with: pg_dump restores into an
-    # equal or NEWER major version, never an older one, so a local database
-    # ahead of production is a restore that fails only when it is needed.
+    # inside what the platform can serve, and the addon is provisioned with 17.
+    #
+    # This pin MUST NOT fall behind production. A dump restores into an equal
+    # or NEWER major version, never an older one, so the direction that breaks
+    # a recovery is production being upgraded past this line: every restore
+    # rehearsal keeps passing locally and the real one fails on the day it is
+    # needed. Local ahead of production is harmless. An earlier version of this
+    # comment warned about that harmless direction and left the dangerous one
+    # unsaid.
     image: postgres:17-alpine
     environment:
       POSTGRES_USER: app

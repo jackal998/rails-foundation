@@ -1,7 +1,20 @@
 #!/bin/bash -e
 
-# If running the rails server then create or migrate existing database
-if [ "${@: -2:1}" == "./bin/rails" ] && [ "${@: -1:1}" == "server" ]; then
+# Prepare the database when this container is starting the Rails server.
+#
+# The generated version of this test compared the LAST TWO arguments to
+# "./bin/rails" and "server" exactly, which holds for the Dockerfile's current
+# CMD and stops holding the moment anyone appends a flag: `./bin/rails server
+# -b 0.0.0.0` would skip preparation entirely and boot against whatever schema
+# happened to be there. The failure would be a missing column at runtime, well
+# away from the change that caused it, so the test matches the subcommand
+# wherever it appears instead of only at the end.
+case " $* " in
+  *" ./bin/rails server"*) needs_database=yes ;;
+  *)                       needs_database=no ;;
+esac
+
+if [ "$needs_database" = "yes" ]; then
   ./bin/rails db:prepare
 
   # db:prepare cannot create the Solid Cache / Queue / Cable tables when

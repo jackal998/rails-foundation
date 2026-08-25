@@ -22,6 +22,15 @@ Rails.application.configure do
   # config.asset_host = "http://assets.example.com"
 
   # Store uploaded files on the local file system (see config/storage.yml for options).
+  #
+  # READ THIS BEFORE ADDING AN UPLOAD. This container has no persistent volume,
+  # and every deployment replaces it. :local therefore means uploaded files
+  # survive until the next deploy and then vanish, while their attachment rows
+  # stay in the database pointing at nothing -- a broken download rather than a
+  # missing feature, and no error at the moment the data is lost. Nothing in
+  # this application uploads anything yet, which is the only reason this is
+  # safe today. The first feature that does needs an object-storage service
+  # here, not a bigger disk.
   config.active_storage.service = :local
 
   # Assume all access to the app is happening through a SSL-terminating reverse proxy.
@@ -53,21 +62,38 @@ Rails.application.configure do
   config.active_job.queue_adapter = :solid_queue
   config.solid_queue.connects_to = { database: { writing: :queue } }
 
-  # Ignore bad email addresses and do not raise email delivery errors.
-  # Set this to true and configure the email server for immediate delivery to raise delivery errors.
-  # config.action_mailer.raise_delivery_errors = false
+  # This application can send exactly one kind of mail -- a password reset --
+  # and until a domain and a mail provider exist it cannot deliver it. The
+  # three settings below are arranged so that this is LOUD rather than silent,
+  # because the generated defaults made it silent in three separate ways at
+  # once: links were built for example.com, delivery went to localhost:25
+  # where nothing listens, and delivery errors were swallowed. A user would
+  # have been told to check their inbox and nothing would ever arrive.
+  #
+  # Reset mail is sent with deliver_later, so a raised error fails that job and
+  # is recorded in solid_queue_failed_executions. The web request is unaffected.
+  config.action_mailer.raise_delivery_errors = true
 
-  # Set host to be used by links generated in mailer templates.
-  config.action_mailer.default_url_options = { host: "example.com" }
+  # No fake host. Rails raises "Missing host to link to" when a mail is
+  # rendered without this, which is a visible failure; a link to example.com is
+  # a wrong answer that looks like a right one.
+  if ENV["APP_HOST"].present?
+    config.action_mailer.default_url_options = { host: ENV["APP_HOST"], protocol: "https" }
+  end
 
-  # Specify outgoing SMTP server. Remember to add smtp/* credentials via bin/rails credentials:edit.
-  # config.action_mailer.smtp_settings = {
-  #   user_name: Rails.application.credentials.dig(:smtp, :user_name),
-  #   password: Rails.application.credentials.dig(:smtp, :password),
-  #   address: "smtp.example.com",
-  #   port: 587,
-  #   authentication: :plain
-  # }
+  # Driven by the environment rather than by editing this file, so that adding
+  # a provider later is a deployment change and not a commit. Absent these,
+  # Action Mailer keeps its default SMTP transport and fails loudly per above.
+  if ENV["SMTP_ADDRESS"].present?
+    config.action_mailer.smtp_settings = {
+      address: ENV.fetch("SMTP_ADDRESS"),
+      port: Integer(ENV.fetch("SMTP_PORT", 587)),
+      user_name: ENV.fetch("SMTP_USER_NAME"),
+      password: ENV.fetch("SMTP_PASSWORD"),
+      authentication: :plain,
+      enable_starttls_auto: true
+    }
+  end
 
   # Enable locale fallbacks for I18n (makes lookups for any locale fall back to
   # the I18n.default_locale when a translation cannot be found).

@@ -95,6 +95,25 @@ test:
 # Read https://guides.rubyonrails.org/configuring.html#configuring-a-database
 # for a full overview on how database connection configuration can be specified.
 #
+# WHAT ACTUALLY RUNS IN PRODUCTION, because the block below does not say it.
+#
+# The deployment points DATABASE_URL, PRIMARY_DATABASE_URL, CACHE_DATABASE_URL,
+# QUEUE_DATABASE_URL and CABLE_DATABASE_URL at ONE managed database. The four
+# database names below are the fallback for when those variables are unset;
+# they are not four databases that exist anywhere. Note that DATABASE_URL on
+# its own is not enough: Rails applies it to `primary` only, so a deployment
+# that sets just that one gets a working primary and three roles still aiming
+# at names nothing has created.
+#
+# `migrations_paths` below points at db/cache_migrate, db/queue_migrate and
+# db/cable_migrate. THOSE DIRECTORIES DO NOT EXIST. Rails 8.1 ships the Solid
+# schemas as schema files only, so `db:migrate:cache` exits 0 having done
+# nothing, and `db:prepare` creates those tables only along the path it takes
+# for a database that does not yet exist -- which is never true when one
+# database is already serving primary. That combination took production down
+# with exit code 0 on 2026-08-24. bin/prepare-solid-databases is what closes
+# it, and script/missing_solid_databases.rb is the check that decides when it
+# is safe to. Read both before changing anything here.
 production:
   primary: &primary_production
     <<: *default

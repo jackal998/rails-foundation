@@ -1,0 +1,136 @@
+#!/bin/bash
+# Prove this repository's own gitleaks rules still tell their two answers apart.
+#
+# CI runs gitleaks over every commit, and a green result there means only that
+# nothing matched. If someone edits .gitleaks.toml until a rule matches
+# nothing at all, that run stays green and the repository looks safer than
+# before the edit. A rule that has stopped watching and a repository with
+# nothing to hide produce identical output, which is why this exists.
+#
+# Both directions for every rule. The must-pass half matters as much as the
+# must-catch half: a rule tightened until it rejects ordinary placeholder
+# prose gets switched off by whoever it blocks, and then it protects nothing.
+#
+# Fixtures are written to a temp directory OUTSIDE the repository, so nothing
+# here is a tracked file containing a secret shape, and gitleaks is never
+# handed its own report to scan -- an earlier version of this test did exactly
+# that and reported two leaks in a directory holding one innocuous line.
+
+set -uo pipefail
+
+cd "$(dirname "$0")/.."
+CONFIG="$PWD/.gitleaks.toml"
+
+GITLEAKS="${GITLEAKS:-}"
+if [ -z "$GITLEAKS" ]; then
+  if command -v gitleaks >/dev/null 2>&1; then GITLEAKS=gitleaks
+  elif [ -x "./gitleaks" ]; then GITLEAKS=./gitleaks
+  elif [ -x "$HOME/bin/gitleaks.exe" ]; then GITLEAKS="$HOME/bin/gitleaks.exe"
+  else
+    echo "gitleaks not found. Set GITLEAKS=/path/to/gitleaks." >&2
+    exit 2
+  fi
+fi
+
+WORK="$(mktemp -d)"
+REPORT="$(mktemp -d)"
+trap 'rm -rf "$WORK" "$REPORT"' EXIT
+
+pass=0
+fail=0
+
+# check <expect CATCH|CLEAN> <relative filename> <content>
+check() {
+  local expect="$1" name="$2" content="$3"
+  rm -rf "${WORK:?}/case"
+  mkdir -p "$WORK/case/$(dirname "$name")"
+  printf '%s\n' "$content" > "$WORK/case/$name"
+
+  "$GITLEAKS" dir --config "$CONFIG" --redact "$WORK/case" > "$REPORT/out.txt" 2>&1
+  local rc=$? got=CLEAN
+  [ "$rc" -ne 0 ] && got=CATCH
+
+  if [ "$got" = "$expect" ]; then
+    printf '  ok    %-50s %s\n' "$name: $expect" "$got"
+    pass=$((pass + 1))
+  else
+    printf '  FAIL  %-50s expected %s, got %s\n' "$name" "$expect" "$got"
+    sed -n '1,12p' "$REPORT/out.txt" >&2
+    fail=$((fail + 1))
+  fi
+}
+
+# Every must-catch fixture is ASSEMBLED HERE, never written out as a literal.
+#
+# That is not an attempt to slip anything past the scanner -- there is no real
+# secret in this file to slip -- it is the repository's own rule applied to
+# itself. ci.yml says it carries no credentials because nothing can tell a
+# throwaway value from a real one by looking at it, and a file full of
+# convincing fakes in a public repository is the same problem wearing a
+# different hat. Assembling them means the file holds no secret shape at all,
+# needs no allowlist entry, and still hands gitleaks the real thing at runtime.
+#
+# The first version did hardcode them, and the pre-commit hook rejected it
+# under four separate rules, one of them gitleaks' own generic-api-key. That
+# was the rules working, on the file whose job is to prove they work.
+HEX32="$(openssl rand -hex 16)"
+HEX64="$(openssl rand -hex 32)"
+ALPHA64="$(printf 'z%.0s' $(seq 1 64))"
+USER_NAME="jsmith"
+HAN_NAME="$(printf '\xe5\xb0\x8f\xe6\x98\x8e')"   # a two-character Han name
+PW="$(openssl rand -hex 6)"
+ID_LETTER="A"
+SCHEME="postgres"
+
+echo "rails-key-file-staged"
+check CATCH config/master.key "$HEX32"
+check CLEAN config/settings.yml "greeting: hello"
+
+echo "rails-master-key-literal"
+check CATCH deploy.sh "RAILS_MASTER_KEY=$HEX32"
+check CLEAN deploy.sh 'RAILS_MASTER_KEY=${RAILS_MASTER_KEY:?set me}'
+
+echo "rails-secret-key-base-literal"
+check CATCH app.env "SECRET_KEY_BASE=$HEX64"
+# Not hex. secret_key_base is a string, and a rule that only knew [a-f0-9]
+# would publish this one while reporting the repository clean.
+check CATCH app.env "SECRET_KEY_BASE=$ALPHA64"
+check CLEAN app.rb 'config.secret_key_base = ENV.fetch("SECRET_KEY_BASE")'
+check CLEAN run.sh 'SECRET_KEY_BASE=${SECRET_KEY_BASE:?set me}'
+
+echo "home-path-real-username"
+check CATCH README.md "see C:\\Users\\$USER_NAME\\repo"
+check CATCH README.md "see C:/Users/$USER_NAME/repo"
+# Non-ASCII names are people too. An ASCII-only class was silent on exactly
+# the accounts whose names are not written in Latin letters, and this case is
+# also what proves LC_ALL took effect.
+check CATCH README.md "see C:/Users/$HAN_NAME/repo"
+check CLEAN README.md 'see C:\Users\<you>\repo'
+check CLEAN README.md 'it lives in /home/$USER/src'
+check CLEAN README.md 'it lives in %USERPROFILE%\repo'
+# An elision names nobody. Treating "..." as a username put a permanent false
+# finding in merged history, which no ignore-file entry could ever retire.
+check CLEAN README.md 'the path C:/Users/.../Temp/x.sql'
+
+echo "postgres-url-with-password"
+# The scheme is assembled too. Leaving it literal still formed a complete
+# connection-URL shape around the variable, and the rule matched the file.
+check CATCH compose.yaml "DATABASE_URL: ${SCHEME}://app:${PW}@db:5432/app"
+check CLEAN compose.yaml 'DATABASE_URL: postgres://db:5432/app'
+
+echo "tw-national-id"
+check CATCH notes.md "the number ${ID_LETTER}123456789 belongs to someone"
+check CLEAN notes.md "order ${ID_LETTER}12345 shipped"
+
+echo
+echo "passed $pass, failed $fail"
+if [ "$fail" -ne 0 ]; then
+  echo "The rules in .gitleaks.toml no longer behave as this repository expects." >&2
+  exit 1
+fi
+
+# Unix home paths are deliberately absent above. gitleaks' default ruleset
+# allowlists them globally and discards the finding after the rule matches, so
+# no rule written here can catch one. bin/check-personal-paths covers them,
+# and has its own --self-test.
+echo "gitleaks rules verified in both directions"

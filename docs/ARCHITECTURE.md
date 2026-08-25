@@ -168,6 +168,12 @@ mistake at higher confidence. This document already prescribes the
 remedy in the two sections below — a real soak test and a timed exit
 drill — and both need an application that does not yet exist.
 
+> **2026-08-25.** The application exists, has authentication and tests,
+> has been measured as a production image, and has been deployed. The
+> prerequisite in the paragraph above is met, so it no longer defers
+> anything: the soak test and the timed exit drill are simply not done.
+> Neither is scheduled, and nothing in the repository will notice.
+
 The dependency therefore runs the opposite way to how it was assumed:
 **the foundation is not blocked by the platform; the platform decision
 is blocked by the foundation.** Nothing in the layer table is
@@ -276,7 +282,12 @@ without any.
   confirmed: one IP-only rate-limit rule with a ten-second maximum block,
   and 24 hours of security-event retention. That is a perimeter, not a
   rate limiter and not an audit trail — so rate limiting uses Rails 8's
-  built-in `rate_limit`, and the audit log lives in our own database.
+  built-in `rate_limit`, and the audit log belongs in our own database.
+  Rate limiting exists: `sessions#create` and `passwords#create` are both
+  limited. **The audit log does not.** There is no audit table, no model
+  and no write path, and a sentence written in the future tense had been
+  read as a description of something built. Nothing records a login, a
+  failed login, or a password reset today.
 - **The vendor's DPA, sub-processor list, and backup residency**, which
   matter before any real personal data.
 - **The local breach-notification deadline in hours.** The statutory duty
@@ -408,9 +419,12 @@ rather than during an incident.
   property has to be bought back some other way.
 - **The measured p95 from Taiwan to the chosen free region exceeds what
   the app can live with** — then "free" has been paid for in latency,
-  and the choice is Tokyo-with-a-card or a different vendor. Measure
-  before assuming; the only latency numbers on record are ICMP to a
-  different vendor's endpoints.
+  and the choice is Tokyo-with-a-card or a different vendor. Measured
+  2026-08-24 against the deployed origin, not a proxy for it: 30 of 30
+  requests returned 200, median 693 ms, p90 782 ms, against 82 ms for the
+  same page served locally. So the number exists and the judgement does
+  not: nobody has yet said what this application can live with. That is
+  the owner's call and it has not been made.
 - Free container too small under a real soak test → step up one compute
   plan; do not retreat to SQLite.
 - More than ~3 app instances → add a connection pooler **before** scaling
